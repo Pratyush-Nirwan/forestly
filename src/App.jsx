@@ -27,6 +27,84 @@ import {
   saveGlobalSeed,
 } from './lib/forest'
 
+const CONTROLS_SEEN_KEY = 'forestly_controls_seen'
+
+const TOUCH_CONTROLS = [
+  { icon: '👆', action: 'Pan camera',      detail: 'Swipe with one finger' },
+  { icon: '✌️', action: 'Orbit / rotate',  detail: 'Hold one finger, swipe with another' },
+  { icon: '🤏', action: 'Zoom in & out',   detail: 'Pinch two fingers together or apart' },
+  { icon: '👇', action: 'Select a tree',   detail: 'Tap any tree to inspect its habit' },
+  { icon: '🫱', action: 'Zoom to grove',   detail: 'Tap a coloured area in Area View' },
+]
+
+const DESKTOP_CONTROLS = [
+  { icon: '🖱️', action: 'Pan camera',      detail: 'Left-click drag' },
+  { icon: '🖱️', action: 'Orbit / rotate',  detail: 'Right-click drag' },
+  { icon: '🖱️', action: 'Zoom in & out',   detail: 'Scroll wheel' },
+  { icon: '⌨️', action: 'Move camera',     detail: 'W A S D  or  Arrow keys' },
+  { icon: '🖱️', action: 'Select a tree',   detail: 'Click any tree' },
+  { icon: '🖱️', action: 'Zoom to grove',   detail: 'Click a coloured area in Area View' },
+]
+
+function ControlsOnboardingModal({ onDismiss }) {
+  const [isTouch] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+  )
+  const controls = isTouch ? TOUCH_CONTROLS : DESKTOP_CONTROLS
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-end justify-center p-4 md:items-center"
+      style={{ background: 'rgba(10,22,15,0.72)', backdropFilter: 'blur(8px)' }}
+      onClick={onDismiss}
+    >
+      <div
+        className="forest-panel w-full max-w-sm rounded-[28px] p-6 text-[#edf6ea]"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="mb-5 text-center">
+          <div className="mb-2 text-3xl">🌲</div>
+          <h2 className="text-base font-bold tracking-tight text-white">Welcome to Forestly</h2>
+          <p className="mt-1 text-[11px] text-[#d4e4cc]/60">
+            {isTouch ? 'Touch gestures to navigate your forest' : 'Keyboard & mouse controls'}
+          </p>
+        </div>
+
+        {/* Controls list */}
+        <div className="flex flex-col gap-2 mb-5">
+          {controls.map(({ icon, action, detail }) => (
+            <div
+              key={action}
+              className="flex items-center gap-3 rounded-2xl border border-white/8 bg-black/15 px-3 py-2.5"
+            >
+              <span className="shrink-0 text-lg leading-none">{icon}</span>
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold text-white">{action}</p>
+                <p className="text-[10px] text-[#dce9d6]/55 mt-0.5">{detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Tip */}
+        <p className="mb-4 rounded-xl border border-white/8 bg-white/5 px-4 py-2.5 text-[10px] leading-5 text-[#dce9d6]/60">
+          💡 Complete habits to plant trees in your forest. Open the <span className="text-[#a8d878] font-semibold">Controls</span> tab anytime to revisit these.
+        </p>
+
+        {/* CTA */}
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="w-full rounded-2xl bg-[#b8d890] py-3 text-sm font-bold text-[#1e3018] transition hover:bg-[#cdeaa8] active:scale-[0.98]"
+        >
+          Let's grow! 🌱
+        </button>
+      </div>
+    </div>
+  )
+}
+
 const ForestScene = lazy(() => import('./components/ForestScene'))
 const TERRAIN_SLIDERS = [
   {
@@ -70,11 +148,24 @@ function App() {
   const [hoveredAreaInfo, setHoveredAreaInfo] = useState(null)
   const [terrainSettings, setTerrainSettings] = useState(loadTerrainSettings)
   const [isPending, startTransition] = useTransition()
+  const [showOnboarding, setShowOnboarding] = useState(false)
   const deferredHabits = useDeferredValue(habits)
   const pendingFocusRef = useRef(null)
   const todayStamp = getTodayStamp()
   const forestTotals = getForestTotals(habits)
   const sceneDateLabel = getSceneDateLabel()
+
+  // Show onboarding on first visit
+  useEffect(() => {
+    if (!localStorage.getItem(CONTROLS_SEEN_KEY)) {
+      setShowOnboarding(true)
+    }
+  }, [])
+
+  function handleDismissOnboarding() {
+    localStorage.setItem(CONTROLS_SEEN_KEY, '1')
+    setShowOnboarding(false)
+  }
 
   useEffect(() => {
     if (!isDemo) {
@@ -277,6 +368,11 @@ function App() {
           </div>
         )}
       </div>
+
+      {/* ── First-visit controls onboarding ── */}
+      {showOnboarding && (
+        <ControlsOnboardingModal onDismiss={handleDismissOnboarding} />
+      )}
     </main>
   )
 }

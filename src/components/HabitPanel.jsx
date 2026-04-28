@@ -445,6 +445,14 @@ function StatsTab({ habits, todayStamp }) {
 }
 
 // ── Controls reference tab ─────────────────────────────────────────────────────
+function useIsTouchDevice() {
+  const [isTouch, setIsTouch] = useState(false)
+  useEffect(() => {
+    setIsTouch(window.matchMedia('(pointer: coarse)').matches)
+  }, [])
+  return isTouch
+}
+
 function Key({ children }) {
   return (
     <kbd className="inline-flex items-center justify-center rounded-lg border border-white/20 bg-white/10 px-2 py-1 font-mono text-[10px] font-semibold text-white shadow-sm min-w-[28px]">
@@ -462,30 +470,64 @@ function ControlRow({ keys, label }) {
   )
 }
 
+// Gesture icon components
+function GestureRow({ icon, action, description }) {
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-white/8 bg-black/10 px-3 py-2.5">
+      <div className="shrink-0 text-xl leading-none">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-[11px] font-semibold text-white">{action}</p>
+        <p className="text-[10px] text-[#dce9d6]/55 mt-0.5">{description}</p>
+      </div>
+    </div>
+  )
+}
+
 function ControlsTab() {
+  const isTouch = useIsTouchDevice()
+
+  if (isTouch) {
+    return (
+      <div className="flex flex-col gap-3 overflow-y-auto pr-1">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-[#d4e4cc]/55 mb-1">Touch Gestures</p>
+        <GestureRow icon="👆" action="Pan camera" description="Swipe with one finger" />
+        <GestureRow icon="✌️" action="Orbit / rotate" description="Hold one finger, swipe with another" />
+        <GestureRow icon="🤏" action="Zoom in / out" description="Pinch two fingers together or apart" />
+        <GestureRow icon="👇" action="Select tree" description="Tap a tree to inspect its habit" />
+        <GestureRow icon="🫱" action="Zoom to grove" description="Tap a coloured area to zoom in" />
+        <div className="mt-1 rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+          <p className="text-[10px] font-semibold text-[#d4e4cc]/60 uppercase tracking-widest mb-1.5">Tip</p>
+          <p className="text-[11px] leading-5 text-[#dce9d6]/65">
+            Switch to <span className="text-[#a8d878]">Area View</span> in the Habits tab to see coloured grove overlays for each habit.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   const sections = [
     {
       title: 'Navigate',
       rows: [
-        { keys: ['W', '↑'],         label: 'Move forward'   },
-        { keys: ['S', '↓'],         label: 'Move backward'  },
-        { keys: ['A', '←'],         label: 'Move left'      },
-        { keys: ['D', '→'],         label: 'Move right'     },
+        { keys: ['W', '↑'],     label: 'Move forward'   },
+        { keys: ['S', '↓'],     label: 'Move backward'  },
+        { keys: ['A', '←'],     label: 'Move left'      },
+        { keys: ['D', '→'],     label: 'Move right'     },
       ],
     },
     {
       title: 'Mouse',
       rows: [
-        { keys: ['LMB drag'],      label: 'Pan camera'     },
-        { keys: ['RMB drag'],      label: 'Orbit / rotate' },
-        { keys: ['Scroll'],        label: 'Zoom in / out'  },
+        { keys: ['LMB drag'],   label: 'Pan camera'     },
+        { keys: ['RMB drag'],   label: 'Orbit / rotate' },
+        { keys: ['Scroll'],     label: 'Zoom in / out'  },
       ],
     },
     {
       title: 'Interact',
       rows: [
-        { keys: ['Click tree'],    label: 'Select tree'    },
-        { keys: ['Click area'],    label: 'Zoom to grove'  },
+        { keys: ['Click tree'], label: 'Select tree'    },
+        { keys: ['Click area'], label: 'Zoom to grove'  },
       ],
     },
   ]
@@ -504,8 +546,6 @@ function ControlsTab() {
           </div>
         </div>
       ))}
-
-      {/* Quick tip */}
       <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
         <p className="text-[10px] font-semibold text-[#d4e4cc]/60 uppercase tracking-widest mb-1.5">Tip</p>
         <p className="text-[11px] leading-5 text-[#dce9d6]/65">
