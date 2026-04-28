@@ -271,10 +271,10 @@ function HabitCard({ habit, completedToday, isPending, onComplete, onDelete }) {
   return (
     <div
       className={`rounded-[20px] border px-4 py-3.5 transition-all ${withered
-          ? 'border-amber-400/45 bg-amber-950/25'
-          : completedToday
-            ? 'border-[#a8d878]/30 bg-[#1a3320]/40'
-            : 'border-white/10 bg-black/12 hover:border-white/20 hover:bg-black/18'
+        ? 'border-amber-400/45 bg-amber-950/25'
+        : completedToday
+          ? 'border-[#a8d878]/30 bg-[#1a3320]/40'
+          : 'border-white/10 bg-black/12 hover:border-white/20 hover:bg-black/18'
         }`}
     >
       {/* Row 1: checkbox + name + badges + delete */}
@@ -300,9 +300,9 @@ function HabitCard({ habit, completedToday, isPending, onComplete, onDelete }) {
               )}
               {/* Milestone */}
               <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${milestone.level >= 4 ? 'border-yellow-400/40 text-yellow-300' :
-                  milestone.level >= 3 ? 'border-emerald-400/35 text-emerald-300' :
-                    milestone.level >= 2 ? 'border-green-400/30 text-green-300' :
-                      'border-white/15 text-[#d4e4cc]/75'
+                milestone.level >= 3 ? 'border-emerald-400/35 text-emerald-300' :
+                  milestone.level >= 2 ? 'border-green-400/30 text-green-300' :
+                    'border-white/15 text-[#d4e4cc]/75'
                 }`}>
                 {milestone.emoji} {milestone.label}
               </span>
@@ -474,9 +474,9 @@ function ControlsTab() {
     {
       title: 'Camera',
       rows: [
-        { keys: ['1 finger'], label: 'Pan camera' },
-        { keys: ['1st finger Hold', '+', '2nd fingerswipe'], label: 'Orbit / rotate' },
-        { keys: ['Pinch'], label: 'Zoom in / out' },
+        { keys: ['swipe with 1 finger'], label: 'Pan camera' },
+        { keys: ['hold with one finger and swipe with another'], label: 'Orbit / rotate' },
+        { keys: ['Pinch the screen with two fingers'], label: 'Zoom in / out' },
       ],
     },
     {
@@ -724,8 +724,8 @@ function HabitPanel({
               type="button"
               onClick={() => setActiveTab(tab.id)}
               className={`flex-1 rounded-full py-1.5 text-xs font-medium transition ${activeTab === tab.id
-                  ? 'bg-white/18 text-white'
-                  : 'text-[#d8e7d2]/65 hover:text-white'
+                ? 'bg-white/18 text-white'
+                : 'text-[#d8e7d2]/65 hover:text-white'
                 }`}
             >
               {tab.label}
