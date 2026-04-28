@@ -175,8 +175,8 @@ function App() {
 
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.14),transparent_42%),linear-gradient(180deg,rgba(15,34,24,0.1),rgba(17,31,22,0.38))]" />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-4 pt-4 md:px-6 md:pt-6">
-        <div className="forest-panel pointer-events-auto rounded-[28px] px-6 py-2.5 text-center text-[#eef8ea]/90">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-4 pt-4 md:pt-6">
+        <div className="forest-panel pointer-events-auto rounded-[28px] px-5 py-2.5 text-center text-[#eef8ea]/90">
           <p className="text-sm font-medium">{sceneDateLabel}</p>
           <p className="mt-0.5 text-[0.68rem] uppercase tracking-[0.24em] text-[#d4e4cc]/85">
             {forestTotals.treeCount} trees growing
@@ -185,7 +185,7 @@ function App() {
       </div>
 
 
-      <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between gap-3 p-3 md:p-6">
+      <div className="pointer-events-none absolute inset-0 z-20">
         <HabitPanel
           habits={habits}
           isPending={isPending}
@@ -205,10 +205,10 @@ function App() {
           onSetTerrainSettings={setTerrainSettings}
         />
 
-        {/* ── Bottom-right info panel ── */}
+        {/* ── Bottom info panel ── */}
         {(selectedTreeInfo || hoveredAreaInfo) && (
-          <div className="pointer-events-none absolute bottom-4 right-4 z-30 md:bottom-6 md:right-6">
-            <div className="forest-panel pointer-events-auto w-72 rounded-[24px] px-5 py-4 text-[#eef8ea]">
+          <div className="pointer-events-none absolute bottom-20 left-3 right-3 z-30 md:bottom-6 md:left-auto md:right-6 md:w-72">
+            <div className="forest-panel pointer-events-auto rounded-[24px] px-5 py-4 text-[#eef8ea]">
               {selectedTreeInfo ? (
                 <>
                   <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">

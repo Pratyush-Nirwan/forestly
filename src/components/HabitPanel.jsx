@@ -553,8 +553,85 @@ function HabitPanel({
     [habits],
   )
 
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const [desktopOpen, setDesktopOpen] = useState(true)
+
   return (
-    <aside className="forest-panel pointer-events-auto fixed flex h-[94vh] w-full max-w-sm flex-col overflow-hidden rounded-[28px] p-5 text-[#edf6ea] md:p-6">
+    <>
+      {/* ── Mobile FAB toggle ── */}
+      <button
+        type="button"
+        aria-label={mobileOpen ? 'Close habit panel' : 'Open habit panel'}
+        onClick={() => setMobileOpen(o => !o)}
+        className="forest-panel pointer-events-auto fixed bottom-5 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-full border border-white/20 text-[#edf6ea] shadow-lg transition active:scale-95 md:hidden"
+        style={{ backdropFilter: 'blur(24px)' }}
+      >
+        {mobileOpen ? (
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M2 2l14 14M16 2L2 16" />
+          </svg>
+        ) : (
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <path d="M3 5h14M3 10h14M3 15h14" />
+          </svg>
+        )}
+      </button>
+
+      {/* ── Mobile backdrop ── */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] md:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* ── Desktop collapsed peek-tab ── */}
+      <button
+        type="button"
+        aria-label="Open habit panel"
+        onClick={() => setDesktopOpen(true)}
+        className={[
+          'forest-panel pointer-events-auto fixed left-0 top-5 z-50 hidden flex-row items-center gap-2 rounded-r-2xl border-l-0 px-3 py-2.5 text-[#edf6ea] shadow-lg transition-all duration-300 md:flex',
+          desktopOpen ? 'opacity-0 pointer-events-none -translate-x-full' : 'opacity-100 translate-x-0',
+        ].join(' ')}
+      >
+        {/* Chevron right */}
+        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 2l6 5-6 5" />
+        </svg>
+        <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#d4e4cc]/80">
+          Habits
+        </span>
+        {/* Tree count badge */}
+        {forestTotals.treeCount > 0 && (
+          <span className="rounded-full bg-white/15 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+            {forestTotals.treeCount}
+          </span>
+        )}
+        {witheredCount > 0 && (
+          <span className="rounded-full bg-amber-500/30 px-1.5 py-0.5 text-[9px] font-semibold text-amber-300">
+            ⚠
+          </span>
+        )}
+      </button>
+
+    <aside
+      className={[
+        'forest-panel pointer-events-auto fixed flex flex-col overflow-hidden text-[#edf6ea]',
+        // Desktop: left sidebar, slides off left when collapsed
+        'md:left-0 md:top-0 md:bottom-0 md:h-screen md:w-[22rem] md:rounded-r-[28px] md:rounded-l-none md:p-6',
+        desktopOpen ? 'md:translate-x-0' : 'md:-translate-x-full',
+        // Mobile: bottom sheet
+        'left-0 right-0 bottom-0 h-[82vh] w-full rounded-t-[28px] rounded-b-none p-4',
+        'transition-transform duration-300 ease-out z-40',
+        mobileOpen ? 'translate-y-0' : 'translate-y-full md:translate-y-0',
+      ].join(' ')}
+    >
+      {/* ── Drag handle (mobile only) ── */}
+      <div className="mb-3 flex justify-center shrink-0 md:hidden">
+        <div className="h-1 w-10 rounded-full bg-white/25" />
+      </div>
+
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-4 shrink-0">
         <div>
@@ -570,6 +647,18 @@ function HabitPanel({
               ⚠ {witheredCount}
             </div>
           )}
+          {/* Desktop collapse button */}
+          <button
+            type="button"
+            aria-label="Collapse panel"
+            onClick={() => setDesktopOpen(false)}
+            className="hidden rounded-full p-1.5 text-[#d4e4cc]/50 transition hover:bg-white/10 hover:text-white md:flex items-center justify-center"
+            title="Collapse panel"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 2L4 7l6 5" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -739,6 +828,7 @@ function HabitPanel({
         {activeTab === 'controls' && <ControlsTab />}
       </div>
     </aside>
+    </>
   )
 }
 
