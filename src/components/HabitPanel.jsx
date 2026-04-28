@@ -474,9 +474,9 @@ function ControlsTab() {
     {
       title: 'Camera',
       rows: [
-        { keys: ['swipe with 1 finger'], label: 'Pan camera' },
-        { keys: ['hold with one finger and swipe with another'], label: 'Orbit / rotate' },
-        { keys: ['Pinch the screen with two fingers'], label: 'Zoom in / out' },
+        { keys: ['1 finger swipe'], label: 'Pan camera' },
+        { keys: ['2 finger swipe'], label: 'Orbit / rotate' },
+        { keys: ['Pinch'], label: 'Zoom in / out' },
       ],
     },
     {
