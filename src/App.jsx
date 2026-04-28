@@ -12,6 +12,7 @@ import {
   completeHabitForToday,
   createHabitRecord,
   DEFAULT_TERRAIN_SETTINGS,
+  deleteHabit,
   getForestTotals,
   getSceneDateLabel,
   getTodayStamp,
@@ -22,6 +23,8 @@ import {
   saveTerrainSettings,
   saveSceneSetting,
   createDemoHabits,
+  loadGlobalSeed,
+  saveGlobalSeed,
 } from './lib/forest'
 
 const ForestScene = lazy(() => import('./components/ForestScene'))
@@ -58,6 +61,7 @@ const TERRAIN_SLIDERS = [
 
 function App() {
   const isDemo = typeof window !== 'undefined' && window.location.pathname === '/demo'
+  const [globalSeed, setGlobalSeed] = useState(loadGlobalSeed)
   const [habits, setHabits] = useState(() => (isDemo ? createDemoHabits() : loadHabits()))
   const [timeOfDay, setTimeOfDay] = useState(loadSceneSetting)
   const [focusTarget, setFocusTarget] = useState(null)
@@ -111,10 +115,12 @@ function App() {
     startTransition(() => {
       setHabits((currentHabits) => {
         const result = createHabitRecord(name, currentHabits)
-        pendingFocusRef.current = {
-          key: result.plantedTree.id,
-          x: result.plantedTree.x,
-          z: result.plantedTree.z,
+        if (result.plantedTree) {
+          pendingFocusRef.current = {
+            key: result.plantedTree.id,
+            x: result.plantedTree.x,
+            z: result.plantedTree.z,
+          }
         }
         return result.nextHabits
       })
@@ -139,6 +145,18 @@ function App() {
     })
   }
 
+  function handleDeleteHabit(habitId) {
+    startTransition(() => {
+      setHabits(current => deleteHabit(habitId, current))
+    })
+  }
+
+  function handleSetGlobalSeed(newSeed) {
+    const lowerSeed = newSeed.toLowerCase()
+    saveGlobalSeed(lowerSeed)
+    setGlobalSeed(lowerSeed)
+  }
+
   return (
     <main className="relative h-screen overflow-hidden bg-[#b0c5b2] text-white">
       <Suspense fallback={<div className="fixed inset-0 bg-[#a9c3ad]" />}>
@@ -151,6 +169,7 @@ function App() {
           selectedTreeId={selectedTreeInfo?.treeId ?? null}
           onTreeSelect={setSelectedTreeInfo}
           onAreaHover={setHoveredAreaInfo}
+          globalSeed={globalSeed}
         />
       </Suspense>
 
@@ -165,48 +184,6 @@ function App() {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute right-4 top-4 z-20 hidden md:block md:right-6 md:top-6">
-        <section className="forest-panel pointer-events-auto w-full max-w-[16rem] rounded-[28px] px-5 py-4 text-[#eef8ea]/85">
-          <div className="flex items-center justify-between">
-            <p className="text-xs uppercase tracking-[0.2em] text-[#dce9d4]/85">
-              Terrain
-            </p>
-            <button
-              type="button"
-              onClick={() => setTerrainSettings({ ...DEFAULT_TERRAIN_SETTINGS })}
-              className="rounded-full border border-white/20 px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-[#ebf6e6]/80 transition hover:bg-white/10"
-            >
-              Reset
-            </button>
-          </div>
-          <div className="mt-3 space-y-2.5">
-            {TERRAIN_SLIDERS.map((slider) => (
-              <label key={slider.id} className="block">
-                <div className="mb-1 flex items-center justify-between text-xs">
-                  <span>{slider.label}</span>
-                  <span className="text-[#d8e7d2]/80">
-                    {terrainSettings[slider.id].toFixed(2)}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={slider.min}
-                  max={slider.max}
-                  step={slider.step}
-                  value={terrainSettings[slider.id]}
-                  onChange={(event) =>
-                    setTerrainSettings((current) => ({
-                      ...current,
-                      [slider.id]: Number(event.target.value),
-                    }))
-                  }
-                  className="w-full accent-[#d7ebb9]"
-                />
-              </label>
-            ))}
-          </div>
-        </section>
-      </div>
 
       <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between gap-3 p-3 md:p-6">
         <HabitPanel
@@ -221,45 +198,84 @@ function App() {
           onCompleteHabit={handleCompleteHabit}
           onSetTimeOfDay={setTimeOfDay}
           onSetViewMode={setViewMode}
+          onDeleteHabit={handleDeleteHabit}
+          globalSeed={globalSeed}
+          onSetGlobalSeed={handleSetGlobalSeed}
+          terrainSettings={terrainSettings}
+          onSetTerrainSettings={setTerrainSettings}
         />
 
-        <div className="pointer-events-none hidden items-end justify-end md:flex">
-          <div className="forest-panel pointer-events-auto max-w-xs rounded-[28px] px-5 py-4 text-right text-sm leading-6 text-[#eef8ea]/78">
-            {selectedTreeInfo ? (
-              <>
-                <p className="text-xs uppercase tracking-[0.2em] text-[#dce9d4]/85">
-                  Selected Tree
-                </p>
-                <p className="mt-1 font-semibold text-[#f6fbf3]">
-                  {selectedTreeInfo.habitName}
-                </p>
-                <p className="mt-1">
-                  {selectedTreeInfo.daysCompleted}
-                  {' '}
-                  days completed
-                </p>
-                <p>{selectedTreeInfo.treeCount} trees in this habit</p>
-              </>
-            ) : hoveredAreaInfo ? (
-              <>
-                <p className="text-xs uppercase tracking-[0.2em] text-[#dce9d4]/85">
-                  Area Hover
-                </p>
-                <p className="mt-1 font-semibold text-[#f6fbf3]">
-                  {hoveredAreaInfo.habitName}
-                </p>
-                <p className="mt-1">
-                  {hoveredAreaInfo.daysCompleted}
-                  {' '}
-                  days completed
-                </p>
-                <p>{hoveredAreaInfo.treeCount} trees in this area</p>
-              </>
-            ) : (
-              <>  </>
-            )}
+        {/* ── Bottom-right info panel ── */}
+        {(selectedTreeInfo || hoveredAreaInfo) && (
+          <div className="pointer-events-none absolute bottom-4 right-4 z-30 md:bottom-6 md:right-6">
+            <div className="forest-panel pointer-events-auto w-72 rounded-[24px] px-5 py-4 text-[#eef8ea]">
+              {selectedTreeInfo ? (
+                <>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">
+                    Selected Tree
+                  </p>
+                  <div className="mt-2 flex items-start justify-between gap-3">
+                    <p className="text-base font-bold text-white leading-tight">{selectedTreeInfo.habitName}</p>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {selectedTreeInfo.streak > 0 && (
+                        <span className="rounded-full bg-orange-500/25 px-2 py-0.5 text-xs font-semibold text-orange-300">
+                          🔥 {selectedTreeInfo.streak}d
+                        </span>
+                      )}
+                      {selectedTreeInfo.milestone && (
+                        <span className="rounded-full border border-white/15 px-2 py-0.5 text-xs text-[#d4e4cc]/80">
+                          {selectedTreeInfo.milestone.emoji} {selectedTreeInfo.milestone.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <span
+                      className="h-3 w-3 rounded-full border border-white/20 shrink-0"
+                      style={{ backgroundColor: selectedTreeInfo.species.leafColor }}
+                    />
+                    <span
+                      className="h-3 w-3 rounded-full border border-white/20 shrink-0"
+                      style={{ backgroundColor: selectedTreeInfo.species.barkColor }}
+                    />
+                    <span className="text-xs text-[#dce9d6]/65 capitalize">{selectedTreeInfo.species.canopyType} canopy</span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Days</p>
+                      <p className="mt-1 text-lg font-bold text-white">{selectedTreeInfo.daysCompleted}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Trees</p>
+                      <p className="mt-1 text-lg font-bold text-white">{selectedTreeInfo.treeCount}</p>
+                    </div>
+                  </div>
+                  <p className="mt-2.5 text-xs text-[#d4e4cc]/50">
+                    Planted {new Date(selectedTreeInfo.plantedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                </>
+              ) : hoveredAreaInfo ? (
+                <>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">
+                    Grove Overview
+                  </p>
+                  <p className="mt-2 text-base font-bold text-white">{hoveredAreaInfo.habitName}</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Days</p>
+                      <p className="mt-1 text-lg font-bold text-white">{hoveredAreaInfo.daysCompleted}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Trees</p>
+                      <p className="mt-1 text-lg font-bold text-white">{hoveredAreaInfo.treeCount}</p>
+                    </div>
+                  </div>
+                  <p className="mt-2.5 text-xs text-[#d4e4cc]/50">Click the area to zoom in</p>
+                </>
+              ) : null}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </main>
   )

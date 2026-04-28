@@ -1,6 +1,9 @@
+import * as THREE from 'three'
+
 const STORAGE_KEY = 'habit-forest-v1'
 const SETTINGS_KEY = 'habit-forest-settings-v1'
 const TERRAIN_SETTINGS_KEY = 'habit-forest-terrain-v1'
+const GLOBAL_SEED_KEY = 'habit-forest-seed-v1'
 const STORAGE_VERSION = 1
 const TAU = Math.PI * 2
 const EDGE_PADDING = 4
@@ -10,9 +13,54 @@ const CANOPY_TYPES = ['rounded', 'conifer', 'hybrid']
 export const WORLD_RADIUS = 48
 export const TERRAIN_PADDING = 10
 export const TERRAIN_SEGMENTS = 180
+export const GLOBE_RADIUS = 30
+export const WATER_LEVEL = -0.3
+
+export function findDryLand(x, z, terrainSettings, globalSeed) {
+  let searchRadius = 0.5
+  let angle = 0
+  
+  for (let i = 0; i < 500; i++) {
+    angle += 0.8
+    searchRadius += 0.15
+    const checkX = x + Math.cos(angle) * searchRadius
+    const checkZ = z + Math.sin(angle) * searchRadius
+    
+    if (Math.hypot(checkX, checkZ) > WORLD_RADIUS - 2) continue
+
+    const height = getTerrainHeight(checkX, checkZ, terrainSettings, globalSeed)
+    if (height > WATER_LEVEL + 0.3) {
+      return { x: checkX, z: checkZ }
+    }
+  }
+  return { x, z }
+}
+
+export function mapToWorld(x, y, z, shape) {
+  if (shape === 'plane') {
+    return {
+      position: [x, y, z],
+      quaternion: new THREE.Quaternion(),
+    }
+  }
+
+  const theta = x / GLOBE_RADIUS
+  const phi = -z / GLOBE_RADIUS
+
+  const r = GLOBE_RADIUS + y
+
+  const pX = r * Math.sin(theta) * Math.cos(phi)
+  const pY = r * Math.cos(theta) * Math.cos(phi) - GLOBE_RADIUS
+  const pZ = r * Math.sin(phi)
+
+  const euler = new THREE.Euler(phi, 0, -theta, 'YXZ')
+  const quaternion = new THREE.Quaternion().setFromEuler(euler)
+
+  return { position: [pX, pY, pZ], quaternion }
+}
 
 export const DEFAULT_TERRAIN_SETTINGS = {
-  amplitude: 0.65,
+  amplitude: 1.1,
   lowFrequency: 1,
   detailFrequency: 1,
   edgeSoftness: 1,
@@ -22,35 +70,135 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-export function getTerrainHeight(x, z, terrainSettings = DEFAULT_TERRAIN_SETTINGS) {
+// ── Gradient noise infrastructure ────────────────────────────────────────────
+const _permCache = new Map()
+
+function _buildPerm(seed) {
+  const key = String(seed)
+  if (_permCache.has(key)) return _permCache.get(key)
+
+  // FNV-1a hash → seed an LCG
+  let s = 2166136261
+  for (let i = 0; i < key.length; i++) {
+    s ^= key.charCodeAt(i)
+    s = Math.imul(s, 16777619)
+  }
+  s = (s >>> 0) || 1
+
+  const next = () => {
+    s = (s * 1664525 + 1013904223) >>> 0
+    return s / 4294967296
+  }
+
+  // Fisher-Yates shuffle of [0..255]
+  const p = new Uint8Array(256)
+  for (let i = 0; i < 256; i++) p[i] = i
+  for (let i = 255; i > 0; i--) {
+    const j = (next() * (i + 1)) | 0
+    const t = p[i]; p[i] = p[j]; p[j] = t
+  }
+
+  // Duplicate so we never need index wrapping
+  const perm = new Uint8Array(512)
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255]
+  _permCache.set(key, perm)
+  return perm
+}
+
+// 8 gradient vectors (unit vectors on a circle)
+const _GX = new Float32Array([ 1, -1,  0,  0,  1, -1,  1, -1])
+const _GY = new Float32Array([ 0,  0,  1, -1,  1, -1, -1,  1])
+
+function _grad(h, x, y) {
+  const i = h & 7
+  return _GX[i] * x + _GY[i] * y
+}
+
+// Quintic fade – smoother than cubic
+function _fade(t) { return t * t * t * (t * (t * 6 - 15) + 10) }
+function _lerp(a, b, t) { return a + t * (b - a) }
+
+// Classic 2-D Perlin noise, returns roughly [-1, 1]
+function _perlin(perm, x, y) {
+  const xi = Math.floor(x) & 255
+  const yi = Math.floor(y) & 255
+  const xf = x - Math.floor(x)
+  const yf = y - Math.floor(y)
+  const u = _fade(xf)
+  const v = _fade(yf)
+
+  const aa = perm[perm[xi    ] + yi    ]
+  const ab = perm[perm[xi    ] + yi + 1]
+  const ba = perm[perm[xi + 1] + yi    ]
+  const bb = perm[perm[xi + 1] + yi + 1]
+
+  return _lerp(
+    _lerp(_grad(aa, xf,     yf    ), _grad(ba, xf - 1, yf    ), u),
+    _lerp(_grad(ab, xf,     yf - 1), _grad(bb, xf - 1, yf - 1), u),
+    v,
+  )
+}
+
+// Fractal Brownian Motion – octaves of noise summed at increasing frequencies
+function _fbm(perm, x, y, octaves) {
+  let val = 0, amp = 0.5, freq = 1, norm = 0
+  for (let o = 0; o < octaves; o++) {
+    val  += _perlin(perm, x * freq, y * freq) * amp
+    norm += amp
+    amp  *= 0.5
+    freq *= 2.03   // slight lacunarity offset removes grid alignment
+  }
+  return val / norm  // normalised to roughly [-1, 1]
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function getTerrainHeight(x, z, terrainSettings = DEFAULT_TERRAIN_SETTINGS, globalSeed = 'forest') {
   const {
-    amplitude = DEFAULT_TERRAIN_SETTINGS.amplitude,
-    lowFrequency = DEFAULT_TERRAIN_SETTINGS.lowFrequency,
-    detailFrequency = DEFAULT_TERRAIN_SETTINGS.detailFrequency,
-    edgeSoftness = DEFAULT_TERRAIN_SETTINGS.edgeSoftness,
+    amplitude      = DEFAULT_TERRAIN_SETTINGS.amplitude,
+    lowFrequency   = DEFAULT_TERRAIN_SETTINGS.lowFrequency,
+    detailFrequency= DEFAULT_TERRAIN_SETTINGS.detailFrequency,
+    edgeSoftness   = DEFAULT_TERRAIN_SETTINGS.edgeSoftness,
   } = terrainSettings
+
+  const perm = _buildPerm(globalSeed)
+
+  // Radial edge falloff (same logic as before)
   const radialDistance = Math.hypot(x, z)
   const edgeFalloff = Math.max(
     0,
     1 - radialDistance / (WORLD_RADIUS + 10 + edgeSoftness * 10),
   )
-  const broadWave =
-    Math.sin(x * 0.06 * lowFrequency) * 1.15 +
-    Math.cos(z * 0.05 * lowFrequency) * 0.95
-  const midWave = Math.sin((x + z) * 0.11 * detailFrequency) * 0.42
-  const crossWave =
-    Math.cos(
-      (x * 0.08 * detailFrequency - z * 0.07 * detailFrequency) +
-        Math.sin((x + z) * 0.02 * detailFrequency),
-    ) * 0.35
 
-  return round((broadWave + midWave + crossWave) * edgeFalloff * amplitude)
+  // ── Domain warp ─────────────────────────────────────────────────────────
+  // Displace the lookup coords with another fBm pass so coastlines and
+  // ridges get that organic, twisted look instead of smooth blobs.
+  const ws = 0.022 * lowFrequency
+  const wx = _fbm(perm, x * ws + 31.7, z * ws + 71.3, 3) * 14
+  const wz = _fbm(perm, x * ws + 91.1, z * ws + 17.9, 3) * 14
+  const sx = x + wx
+  const sz = z + wz
+
+  // ── Terrain layers ───────────────────────────────────────────────────────
+  // 1. Continent-scale shapes  (slow, large, 3 octaves)
+  const continent = _fbm(perm, sx * 0.020 * lowFrequency,          sz * 0.020 * lowFrequency,          3) * 1.6
+
+  // 2. Rolling hills / valleys (medium, 4 octaves)
+  const hills     = _fbm(perm, sx * 0.058 * detailFrequency + 100, sz * 0.058 * detailFrequency + 100, 4) * 0.75
+
+  // 3. Surface roughness       (fine,   3 octaves)
+  const rough     = _fbm(perm, sx * 0.14  * detailFrequency + 200, sz * 0.14  * detailFrequency + 200, 3) * 0.22
+
+  const combined = continent + hills + rough
+
+  return round(combined * edgeFalloff * amplitude)
 }
+
 
 export function sampleTerrainMeshHeight(
   x,
   z,
   terrainSettings = DEFAULT_TERRAIN_SETTINGS,
+  globalSeed = 'forest'
 ) {
   const size = (WORLD_RADIUS + TERRAIN_PADDING) * 2
   const half = size / 2
@@ -72,10 +220,10 @@ export function sampleTerrainMeshHeight(
   const z0 = -half + cellZ * step
   const z1 = z0 + step
 
-  const h00 = getTerrainHeight(x0, z0, terrainSettings)
-  const h10 = getTerrainHeight(x1, z0, terrainSettings)
-  const h01 = getTerrainHeight(x0, z1, terrainSettings)
-  const h11 = getTerrainHeight(x1, z1, terrainSettings)
+  const h00 = getTerrainHeight(x0, z0, terrainSettings, globalSeed)
+  const h10 = getTerrainHeight(x1, z0, terrainSettings, globalSeed)
+  const h01 = getTerrainHeight(x0, z1, terrainSettings, globalSeed)
+  const h11 = getTerrainHeight(x1, z1, terrainSettings, globalSeed)
 
   if (fx + fz <= 1) {
     return round(h00 + (h10 - h00) * fx + (h01 - h00) * fz)
@@ -373,24 +521,20 @@ export function saveHabits(habits) {
 }
 
 export function loadSceneSetting() {
-  if (typeof window === 'undefined') {
-    return 'dawn'
-  }
-
-  const value = window.localStorage.getItem(SETTINGS_KEY)
-
-  if (value === 'day' || value === 'dusk' || value === 'dawn') {
-    return value
-  }
-
-  return 'dawn'
+  if (typeof window === 'undefined') return 0.5
+  const raw = window.localStorage.getItem(SETTINGS_KEY)
+  if (raw === null) return 0.5
+  const num = Number(raw)
+  if (!isNaN(num) && num >= 0 && num <= 1) return num
+  // map legacy string values
+  if (raw === 'dawn') return 0
+  if (raw === 'day')  return 0.5
+  if (raw === 'dusk') return 1
+  return 0.5
 }
 
 export function saveSceneSetting(value) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
+  if (typeof window === 'undefined') return
   window.localStorage.setItem(SETTINGS_KEY, value)
 }
 
@@ -439,17 +583,33 @@ export function saveTerrainSettings(value) {
   window.localStorage.setItem(TERRAIN_SETTINGS_KEY, JSON.stringify(value))
 }
 
+export function loadGlobalSeed() {
+  if (typeof window === 'undefined') {
+    return 'forest'
+  }
+
+  let seed = window.localStorage.getItem(GLOBAL_SEED_KEY)
+
+  if (!seed) {
+    seed = Math.random().toString(36).substring(2, 8).toUpperCase()
+    window.localStorage.setItem(GLOBAL_SEED_KEY, seed)
+  }
+
+  return seed
+}
+
+export function saveGlobalSeed(seed) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.localStorage.setItem(GLOBAL_SEED_KEY, seed)
+}
+
 export function createHabitRecord(name, currentHabits) {
   const trimmedName = name.trim()
   const id = createId()
   const species = createSpecies(id)
-  const allTrees = flattenTreePositions(currentHabits)
-  const spacing = Math.max(
-    BASE_TREE_SPACING,
-    species.trunkThickness * 4 + species.leafSize,
-  )
-  const firstPosition = createFirstTreePosition(id, allTrees, spacing)
-  const firstTree = createTree(`${id}:0`, firstPosition)
 
   return {
     nextHabits: [
@@ -458,13 +618,13 @@ export function createHabitRecord(name, currentHabits) {
         id,
         name: trimmedName,
         species,
-        trees: [firstTree],
-        lastPosition: { x: firstTree.x, z: firstTree.z },
+        trees: [],          // no tree yet — planted on first check-in
+        lastPosition: null,
         lastCompletedOn: null,
         createdAt: Date.now(),
       },
     ],
-    plantedTree: firstTree,
+    plantedTree: null,   // nothing to focus until first check-in
   }
 }
 
@@ -478,7 +638,15 @@ export function completeHabitForToday(habitId, currentHabits) {
       return habit
     }
 
-    const nextPosition = createNextTreePosition(habit, allTrees)
+    // First ever check-in: use createFirstTreePosition so the tree
+    // lands in a sensible open spot, not at (0, 0).
+    const nextPosition =
+      habit.trees.length === 0
+        ? createFirstTreePosition(habit.id, allTrees,
+            Math.max(BASE_TREE_SPACING,
+              habit.species.trunkThickness * 4 + habit.species.leafSize))
+        : createNextTreePosition(habit, allTrees)
+
     const nextTree = createTree(`${habit.id}:${habit.trees.length}`, nextPosition)
 
     allTrees.push({ x: nextTree.x, z: nextTree.z })
@@ -492,10 +660,7 @@ export function completeHabitForToday(habitId, currentHabits) {
     }
   })
 
-  return {
-    nextHabits,
-    plantedTree,
-  }
+  return { nextHabits, plantedTree }
 }
 
 export function getForestTotals(habits) {
@@ -564,4 +729,75 @@ export function createDemoHabits() {
   }
   
   return habits
+}
+
+// ── Habit analytics ───────────────────────────────────────────────────────────
+
+const DAY_MS = 86400000
+
+function dayKey(ts) {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/** Consecutive-day streak ending today (or yesterday if not done today) */
+export function getHabitStreak(habit) {
+  if (!habit.trees.length) return 0
+  const done = new Set(habit.trees.map(t => dayKey(t.plantedAt)))
+  const todayMs = dayKey(Date.now())
+  let ms = done.has(todayMs) ? todayMs : todayMs - DAY_MS
+  let streak = 0
+  while (done.has(ms) && streak < 9999) { streak++; ms -= DAY_MS }
+  return streak
+}
+
+/** All-time longest consecutive-day streak */
+export function getLongestStreak(habit) {
+  if (!habit.trees.length) return 0
+  const sorted = [...new Set(habit.trees.map(t => dayKey(t.plantedAt)))].sort((a, b) => a - b)
+  let longest = 1, cur = 1
+  for (let i = 1; i < sorted.length; i++) {
+    cur = sorted[i] - sorted[i - 1] === DAY_MS ? cur + 1 : 1
+    if (cur > longest) longest = cur
+  }
+  return longest
+}
+
+/** Array of { ms, completed } for last numDays, oldest first */
+export function getCompletionCalendar(habit, numDays = 28) {
+  const done = new Set(habit.trees.map(t => dayKey(t.plantedAt)))
+  const todayMs = dayKey(Date.now())
+  return Array.from({ length: numDays }, (_, i) => {
+    const ms = todayMs - (numDays - 1 - i) * DAY_MS
+    return { ms, completed: done.has(ms) }
+  })
+}
+
+/** Completion rate 0-100 over last `days` days */
+export function getHabitCompletionRate(habit, days = 30) {
+  const cal = getCompletionCalendar(habit, days)
+  return Math.round(cal.filter(d => d.completed).length / days * 100)
+}
+
+/** Milestone based on total tree count */
+export function getMilestone(treeCount) {
+  if (treeCount >= 100) return { label: 'Ancient', emoji: '🌳', level: 4 }
+  if (treeCount >= 30)  return { label: 'Grove',   emoji: '🌲', level: 3 }
+  if (treeCount >= 7)   return { label: 'Sapling', emoji: '🌿', level: 2 }
+  return                       { label: 'Seedling', emoji: '🪴', level: 1 }
+}
+
+/** True if habit has trees but hasn't been completed in 2+ days */
+export function isHabitWithered(habit) {
+  if (!habit.trees.length || !habit.lastCompletedOn) return false
+  const today     = getTodayStamp()
+  const d         = new Date(); d.setDate(d.getDate() - 1)
+  const yesterday = getTodayStamp(d)
+  return habit.lastCompletedOn !== today && habit.lastCompletedOn !== yesterday
+}
+
+/** Remove a habit by id */
+export function deleteHabit(habitId, currentHabits) {
+  return currentHabits.filter(h => h.id !== habitId)
 }

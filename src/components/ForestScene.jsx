@@ -10,6 +10,12 @@ import {
   WORLD_RADIUS,
   getTerrainHeight,
   sampleTerrainMeshHeight,
+  mapToWorld,
+  GLOBE_RADIUS,
+  WATER_LEVEL,
+  findDryLand,
+  getHabitStreak,
+  getMilestone,
 } from '../lib/forest'
 
 const TERRAIN_Y_OFFSET = -0.18
@@ -22,12 +28,10 @@ function pseudoRandom(seed) {
   return value - Math.floor(value)
 }
 
-
-
 const ROCKS = Array.from({ length: 50 }, (_, index) => {
   const x = (pseudoRandom(index * 11 + 5) * 2 - 1) * (WORLD_RADIUS + 2)
   const z = (pseudoRandom(index * 13 + 7) * 2 - 1) * (WORLD_RADIUS + 2)
-  
+
   return {
     id: `rock-${index}`,
     x,
@@ -42,6 +46,18 @@ const ROCKS = Array.from({ length: 50 }, (_, index) => {
   }
 })
 
+const BUSHES = Array.from({ length: 90 }, (_, index) => {
+  const angle  = pseudoRandom(index * 7  + 3) * Math.PI * 2
+  const radius = Math.sqrt(pseudoRandom(index * 11 + 9)) * (WORLD_RADIUS - 3)
+  return {
+    id:       `bush-${index}`,
+    x:        Math.cos(angle) * radius,
+    z:        Math.sin(angle) * radius,
+    scale:    0.30 + pseudoRandom(index * 19) * 0.65,
+    type:     Math.floor(pseudoRandom(index * 29) * 3),
+    rotation: pseudoRandom(index * 37) * Math.PI * 2,
+  }
+})
 
 
 const TIME_PRESETS = {
@@ -89,44 +105,152 @@ const TIME_PRESETS = {
   },
 }
 
-function Ground({ palette, terrainSettings }) {
+// ── Continuous palette interpolation ────────────────────────────────────────────
+function hexToRgb(h) {
+  const s = h.replace('#', '')
+  return [parseInt(s.slice(0,2),16), parseInt(s.slice(2,4),16), parseInt(s.slice(4,6),16)]
+}
+function lerpHex(a, b, t) {
+  const ra = hexToRgb(a), rb = hexToRgb(b)
+  return '#' + ra.map((v,i) => Math.round(v+(rb[i]-v)*t).toString(16).padStart(2,'0')).join('')
+}
+const lerpN = (a, b, t) => a + (b - a) * t
+const lerpV = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t)
+
+const PALETTES = [TIME_PRESETS.dawn, TIME_PRESETS.day, TIME_PRESETS.dusk]
+
+function interpolatePalette(t) {
+  // t: 0 = dawn, 0.5 = day, 1 = dusk
+  const [from, to, lt] = t <= 0.5
+    ? [PALETTES[0], PALETTES[1], t * 2]
+    : [PALETTES[1], PALETTES[2], (t - 0.5) * 2]
+  return {
+    background:     lerpHex(from.background,     to.background,     lt),
+    fog:            lerpHex(from.fog,             to.fog,            lt),
+    ambient:        lerpN(from.ambient,           to.ambient,        lt),
+    sunIntensity:   lerpN(from.sunIntensity,      to.sunIntensity,   lt),
+    sunColor:       lerpHex(from.sunColor,        to.sunColor,       lt),
+    sunPosition:    lerpV(from.sunPosition,       to.sunPosition,    lt),
+    skyTint:        lerpHex(from.skyTint,         to.skyTint,        lt),
+    ground:         lerpHex(from.ground,          to.ground,         lt),
+    patch:          lerpHex(from.patch,           to.patch,          lt),
+    rock:           lerpHex(from.rock,            to.rock,           lt),
+    sparkle:        lerpHex(from.sparkle,         to.sparkle,        lt),
+    cameraPosition: lerpV(from.cameraPosition,    to.cameraPosition, lt),
+  }
+}
+
+// ── Glowing sun disc in the sky ───────────────────────────────────────────────
+function SunDisc({ sunPosition, sunColor }) {
+  const pos = useMemo(() => {
+    const v = new THREE.Vector3(sunPosition[0], sunPosition[1], sunPosition[2]).normalize()
+    return [v.x * 420, v.y * 420, v.z * 420]
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sunPosition[0], sunPosition[1], sunPosition[2]])
+
+  if (sunPosition[1] < 0) return null   // below horizon
+
+  return (
+    <group position={pos}>
+      {/* Wide outer halo */}
+      <mesh renderOrder={-1}>
+        <sphereGeometry args={[32, 16, 8]} />
+        <meshBasicMaterial color={sunColor} fog={false} transparent opacity={0.06} depthWrite={false} />
+      </mesh>
+      {/* Mid corona */}
+      <mesh renderOrder={-1}>
+        <sphereGeometry args={[20, 16, 8]} />
+        <meshBasicMaterial color={sunColor} fog={false} transparent opacity={0.16} depthWrite={false} />
+      </mesh>
+      {/* Sun core */}
+      <mesh renderOrder={-1}>
+        <sphereGeometry args={[12, 16, 8]} />
+        <meshBasicMaterial color={sunColor} fog={false} depthWrite={false} />
+      </mesh>
+    </group>
+  )
+}
+
+function Ground({ palette, terrainSettings, globalSeed, worldShape }) {
   const terrainGeometry = useMemo(() => {
     const size = (WORLD_RADIUS + TERRAIN_PADDING) * 2
     const segments = TERRAIN_SEGMENTS
     const geometry = new THREE.PlaneGeometry(size, size, segments, segments)
     const positions = geometry.attributes.position
-    const colors = new Float32Array(positions.count * 3)
-    
-    const baseColor = new THREE.Color(palette.ground).convertSRGBToLinear()
-    const highlightColor = new THREE.Color(palette.patch).convertSRGBToLinear()
+    const colors = new Float32Array(positions.count * 4)
+
+    // 5-zone height-based palette
+    const cBeach    = new THREE.Color('#cdb87a').convertSRGBToLinear()
+    const cShore    = new THREE.Color('#8e9968').convertSRGBToLinear()
+    const cLowland  = new THREE.Color(palette.ground).convertSRGBToLinear()
+    const cMeadow   = new THREE.Color(palette.patch).convertSRGBToLinear()
+    const cHighland = new THREE.Color(palette.rock).convertSRGBToLinear()
     const color = new THREE.Color()
 
     for (let index = 0; index < positions.count; index += 1) {
       const x = positions.getX(index)
-      const y = positions.getY(index)
-      const z = getTerrainHeight(x, -y, terrainSettings) || 0
-      positions.setZ(index, z)
-      
-      const heightNorm = Math.max(0, Math.min(1, (z + 1.5) / 4)) || 0
-      const n1 = Math.sin(x * 0.12) * Math.cos(y * 0.12) || 0
-      const n2 = Math.sin((x + y) * 0.07) || 0
-      const noise = (n1 + n2) * 0.3 + 0.6
-      
-      // Add a +0.25 boost to the mixFactor so it naturally biases toward the lighter highlightColor
-      const mixFactor = Math.max(0, Math.min(1, heightNorm * 0.4 + noise * 0.6 + 0.25)) || 0
-      color.copy(baseColor).lerp(highlightColor, mixFactor)
-      
-      colors[index * 3] = color.r
-      colors[index * 3 + 1] = color.g
-      colors[index * 3 + 2] = color.b
+      const z = -positions.getY(index)
+      const y = getTerrainHeight(x, z, terrainSettings, globalSeed) || 0
+
+      const mapped = mapToWorld(x, y, z, worldShape)
+      positions.setXYZ(index, mapped.position[0], mapped.position[1], mapped.position[2])
+
+      const maxDist = worldShape === 'plane'
+        ? Math.max(Math.abs(x), Math.abs(z))
+        : Math.hypot(x, z)
+
+      let alpha = 1.0
+      if (maxDist > WORLD_RADIUS + 2) {
+        alpha = Math.max(0, 1.0 - (maxDist - (WORLD_RADIUS + 2)) / 8)
+      }
+
+      // Approximate slope for rocky-steep blending
+      const eps = 1.2
+      const dy_dx = (getTerrainHeight(x + eps, z, terrainSettings, globalSeed) - y) / eps
+      const dy_dz = (getTerrainHeight(x, z + eps, terrainSettings, globalSeed) - y) / eps
+      const slope = Math.min(1, Math.sqrt(dy_dx * dy_dx + dy_dz * dy_dz) * 1.8)
+
+      // Per-vertex noise for organic variation
+      const nv = (Math.sin(x * 0.21 + 1.4) * Math.cos(z * 0.18 - 0.7)) * 0.18
+
+      // Height zone thresholds — narrow beach, rest is green
+      const wl = WATER_LEVEL
+      if (y < wl + 0.05) {
+        // Thin sandy strip right at water
+        color.copy(cBeach)
+      } else if (y < wl + 0.14) {
+        const t = Math.max(0, Math.min(1, (y - (wl + 0.05)) / 0.09))
+        color.copy(cBeach).lerp(cShore, t)
+      } else if (y < wl + 0.28 + nv) {
+        const t = Math.max(0, Math.min(1, (y - (wl + 0.14)) / 0.14))
+        color.copy(cShore).lerp(cLowland, t)
+      } else if (y < 0.75 + nv) {
+        const t = Math.max(0, Math.min(1, (y - (wl + 0.28)) / 0.75))
+        color.copy(cLowland).lerp(cMeadow, t)
+      } else if (y < 1.40 + nv) {
+        const t = Math.max(0, Math.min(1, (y - 0.75) / 0.65))
+        color.copy(cMeadow).lerp(cHighland, t * 0.85)
+      } else {
+        color.copy(cHighland)
+      }
+
+      // Steep slopes → rocky regardless of height
+      if (slope > 0.25) {
+        color.lerp(cHighland, Math.min(1, (slope - 0.25) / 0.55))
+      }
+
+      colors[index * 4]     = color.r
+      colors[index * 4 + 1] = color.g
+      colors[index * 4 + 2] = color.b
+      colors[index * 4 + 3] = alpha
     }
 
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
     geometry.attributes.color.needsUpdate = true
     positions.needsUpdate = true
     geometry.computeVertexNormals()
     return geometry
-  }, [terrainSettings, palette])
+  }, [terrainSettings, palette, globalSeed, worldShape])
 
   useEffect(() => {
     return () => {
@@ -138,15 +262,128 @@ function Ground({ palette, terrainSettings }) {
     <group>
       <mesh
         receiveShadow
-        rotation-x={-Math.PI / 2}
         position={[0, TERRAIN_Y_OFFSET, 0]}
         geometry={terrainGeometry}
       >
-        <meshStandardMaterial vertexColors={true} roughness={1} />
+        <meshStandardMaterial vertexColors={true} roughness={1} transparent={true} alphaTest={0.05} />
       </mesh>
-
     </group>
   )
+}
+
+function Water({ worldShape }) {
+  const waterGeometry = useMemo(() => {
+    const size     = (WORLD_RADIUS + TERRAIN_PADDING) * 2
+    const segments = worldShape === 'plane' ? 80 : 64
+    const geometry = worldShape === 'plane'
+      ? new THREE.PlaneGeometry(size, size, segments, segments)
+      : new THREE.SphereGeometry(GLOBE_RADIUS + WATER_LEVEL, segments, segments, 0, Math.PI * 2, 0, Math.PI / 2)
+
+    const positions = geometry.attributes.position
+    const colors    = new Float32Array(positions.count * 4)
+
+    for (let i = 0; i < positions.count; i++) {
+      let x, z
+      if (worldShape === 'plane') {
+        x = positions.getX(i); z = positions.getY(i)
+      } else {
+        x = positions.getX(i); z = positions.getZ(i)
+      }
+      const maxDist = worldShape === 'plane'
+        ? Math.max(Math.abs(x), Math.abs(z)) : Math.hypot(x, z)
+
+      let alpha = 0.92
+      if (maxDist > WORLD_RADIUS + 2)
+        alpha = Math.max(0, 0.92 * (1.0 - (maxDist - (WORLD_RADIUS + 2)) / 8))
+
+      const depthFactor = Math.max(0, Math.min(1, 1 - maxDist / WORLD_RADIUS))
+      colors[i * 4]     = 0.06 + depthFactor * 0.04
+      colors[i * 4 + 1] = 0.20 + depthFactor * 0.06
+      colors[i * 4 + 2] = 0.42 + depthFactor * 0.08
+      colors[i * 4 + 3] = alpha
+    }
+
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+    return geometry
+  }, [worldShape])
+
+  return (
+    <mesh
+      position={worldShape === 'plane' ? [0, WATER_LEVEL + TERRAIN_Y_OFFSET, 0] : [0, -GLOBE_RADIUS + TERRAIN_Y_OFFSET, 0]}
+      rotation={worldShape === 'plane' ? [-Math.PI / 2, 0, 0] : [0, 0, 0]}
+      geometry={waterGeometry}
+      receiveShadow
+    >
+      <meshStandardMaterial
+        vertexColors={true}
+        transparent={true}
+        roughness={0.04}
+        metalness={0.30}
+        envMapIntensity={1.4}
+        alphaTest={0.01}
+      />
+    </mesh>
+  )
+}
+
+// Expanding ring ripples on the water surface
+function WaterRipples({ worldShape }) {
+  const groupRef   = useRef(null)
+  const active     = useRef([])
+  const nextSpawn  = useRef(1.0)
+
+  useFrame(({ clock }) => {
+    if (worldShape !== 'plane' || !groupRef.current) return
+    const t = clock.elapsedTime
+
+    // Spawn a new ripple
+    if (t >= nextSpawn.current) {
+      const angle = Math.random() * Math.PI * 2
+      const dist  = Math.random() * WORLD_RADIUS * 0.70
+      const cx    = Math.cos(angle) * dist
+      const cz    = Math.sin(angle) * dist
+
+      const duration  = 3.0 + Math.random() * 2.5
+      const maxRadius = 1.5 + Math.random() * 2.0
+
+      // Use a thin ring: inner=0.82, outer=1.0 of scale
+      const geo = new THREE.RingGeometry(0.82, 1.0, 56)
+      const mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0.55, 0.78, 0.92),
+        transparent: true,
+        opacity: 0.55,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+      const mesh = new THREE.Mesh(geo, mat)
+      // Rings lie flat on the water plane
+      mesh.rotation.x = -Math.PI / 2
+      mesh.position.set(cx, WATER_LEVEL + TERRAIN_Y_OFFSET + 0.04, cz)
+      groupRef.current.add(mesh)
+
+      active.current.push({ mesh, mat, startTime: t, duration, maxRadius })
+      nextSpawn.current = t + 1.8 + Math.random() * 2.5
+    }
+
+    // Update each ring
+    active.current = active.current.filter(rp => {
+      const elapsed  = t - rp.startTime
+      if (elapsed >= rp.duration) {
+        groupRef.current?.remove(rp.mesh)
+        rp.mesh.geometry.dispose()
+        rp.mat.dispose()
+        return false
+      }
+      const progress    = elapsed / rp.duration          // 0 → 1
+      const scale       = 0.05 + progress * rp.maxRadius  // starts tiny
+      rp.mesh.scale.set(scale, scale, 1)
+      rp.mat.opacity    = (1 - progress) * 0.55
+      return true
+    })
+  })
+
+  if (worldShape !== 'plane') return null
+  return <group ref={groupRef} />
 }
 
 function RockModel({ type, palette }) {
@@ -167,7 +404,7 @@ function RockModel({ type, palette }) {
       </group>
     )
   }
-  
+
   if (type === 1) {
     // Cluster of jagged rocks
     return (
@@ -203,29 +440,118 @@ function RockModel({ type, palette }) {
   )
 }
 
-function Rocks({ palette, terrainSettings }) {
+function BushModel({ type, palette }) {
+  const outer = <meshStandardMaterial color={palette.patch} roughness={0.95} flatShading />
+  const inner = <meshStandardMaterial color={palette.ground} roughness={0.95} flatShading />
+
+  if (type === 0) {
+    return (
+      <group>
+        <mesh castShadow receiveShadow position={[0, 0.48, 0]} scale={[1, 0.88, 1]}>
+          <sphereGeometry args={[0.68, 6, 5]} />{outer}
+        </mesh>
+        <mesh castShadow receiveShadow position={[0.38, 0.30, 0.22]} scale={[0.6, 0.6, 0.6]}>
+          <sphereGeometry args={[0.68, 5, 4]} />{inner}
+        </mesh>
+        <mesh castShadow receiveShadow position={[-0.32, 0.26, -0.20]} scale={[0.55, 0.55, 0.55]}>
+          <sphereGeometry args={[0.68, 5, 4]} />{outer}
+        </mesh>
+      </group>
+    )
+  }
+  if (type === 1) {
+    return (
+      <group>
+        <mesh castShadow receiveShadow position={[0, 0.55, 0]} scale={[0.78, 1.18, 0.78]}>
+          <sphereGeometry args={[0.62, 6, 5]} />{inner}
+        </mesh>
+        <mesh castShadow receiveShadow position={[0.40, 0.78, 0.10]}>
+          <sphereGeometry args={[0.42, 5, 4]} />{outer}
+        </mesh>
+        <mesh castShadow receiveShadow position={[-0.34, 0.68, -0.28]}>
+          <sphereGeometry args={[0.38, 5, 4]} />{outer}
+        </mesh>
+        <mesh castShadow receiveShadow position={[0.08, 1.08, -0.10]}>
+          <sphereGeometry args={[0.32, 5, 4]} />{outer}
+        </mesh>
+      </group>
+    )
+  }
+  // type 2 – low spreading
   return (
     <group>
-      {ROCKS.map((rock) => (
-        <group
-          key={rock.id}
-          position={[
-            rock.x,
-            sampleTerrainMeshHeight(rock.x, rock.z, terrainSettings) +
-              TERRAIN_Y_OFFSET,
-            rock.z,
-          ]}
-          rotation={rock.rotation}
-          scale={rock.scale}
-        >
-          <RockModel type={rock.type} palette={palette} />
-        </group>
-      ))}
+      <mesh castShadow receiveShadow position={[0, 0.22, 0]} scale={[1.4, 0.45, 1.4]}>
+        <sphereGeometry args={[0.68, 6, 4]} />{outer}
+      </mesh>
+      <mesh castShadow receiveShadow position={[0.58, 0.18, 0.30]} scale={[0.9, 0.38, 0.9]}>
+        <sphereGeometry args={[0.68, 5, 4]} />{inner}
+      </mesh>
+      <mesh castShadow receiveShadow position={[-0.50, 0.18, -0.38]} scale={[0.85, 0.38, 0.85]}>
+        <sphereGeometry args={[0.68, 5, 4]} />{outer}
+      </mesh>
     </group>
   )
 }
 
-function WildGrass({ palette, terrainSettings }) {
+function Bushes({ palette, terrainSettings, globalSeed, worldShape }) {
+  return (
+    <group>
+      {BUSHES.map((bush) => {
+        let bx = bush.x
+        let bz = bush.z
+        let y  = sampleTerrainMeshHeight(bx, bz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        if (y < WATER_LEVEL + 0.15) {
+          const dry = findDryLand(bx, bz, terrainSettings, globalSeed)
+          bx = dry.x; bz = dry.z
+          y  = sampleTerrainMeshHeight(bx, bz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        }
+        const mapped = mapToWorld(bx, y, bz, worldShape)
+        return (
+          <group key={bush.id} position={mapped.position} quaternion={mapped.quaternion} scale={bush.scale}>
+            <group rotation={[0, bush.rotation, 0]}>
+              <BushModel type={bush.type} palette={palette} />
+            </group>
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+function Rocks({ palette, terrainSettings, globalSeed, worldShape }) {
+  return (
+    <group>
+      {ROCKS.map((rock) => {
+        let rx = rock.x
+        let rz = rock.z
+        let y = sampleTerrainMeshHeight(rx, rz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        if (y < WATER_LEVEL + 0.2) {
+           const dryPos = findDryLand(rx, rz, terrainSettings, globalSeed)
+           rx = dryPos.x
+           rz = dryPos.z
+           y = sampleTerrainMeshHeight(rx, rz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        }
+        
+        const mapped = mapToWorld(rx, y, rz, worldShape)
+
+        return (
+          <group
+            key={rock.id}
+            position={mapped.position}
+            quaternion={mapped.quaternion}
+            scale={rock.scale}
+          >
+            <group rotation={rock.rotation}>
+              <RockModel type={rock.type} palette={palette} />
+            </group>
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
   const meshRef = useRef(null)
 
   const matrices = useMemo(() => {
@@ -241,8 +567,6 @@ function WildGrass({ palette, terrainSettings }) {
 
       for (let b = 0; b < bladeCount; b++) {
         const bAngle = pseudoRandom(f * 1000 + b * 3) * Math.PI * 2
-        
-        // Add distortion to the radius to create irregular, organic field shapes
         const blobDistortion = 1 + Math.sin(bAngle * 3 + pseudoRandom(f) * 10) * 0.4
         const bRad = fieldRadius * Math.sqrt(pseudoRandom(f * 3000 + b * 11)) * blobDistortion
 
@@ -251,24 +575,30 @@ function WildGrass({ palette, terrainSettings }) {
 
         if (Math.abs(x) > WORLD_RADIUS + 3 || Math.abs(z) > WORLD_RADIUS + 3) continue;
 
-        const y = sampleTerrainMeshHeight(x, z, terrainSettings) + TERRAIN_Y_OFFSET
+        let y = sampleTerrainMeshHeight(x, z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        
+        if (y < WATER_LEVEL + 0.3) continue;
 
         const h = 0.15 + pseudoRandom(f * 4000 + b * 13) * 0.35
         const rx = (pseudoRandom(f * 5000 + b * 17) - 0.5) * 0.7
         const rz = (pseudoRandom(f * 6000 + b * 19) - 0.5) * 0.7
         const ry = pseudoRandom(f * 7000 + b * 23) * Math.PI * 2
 
-        // dummy.position.y is pushed down by 40% of the blade height to strictly avoid floating
-        dummy.position.set(x, y + h * 0.1, z)
-        dummy.rotation.set(rx, ry, rz)
+        const mapped = mapToWorld(x, y + h * 0.1, z, worldShape)
+        dummy.position.set(...mapped.position)
+        dummy.quaternion.copy(mapped.quaternion)
+        
+        const localQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz))
+        dummy.quaternion.multiply(localQuat)
+
         dummy.scale.set(0.04 + pseudoRandom(b * 2) * 0.02, h, 0.04 + pseudoRandom(b * 3) * 0.02)
         dummy.updateMatrix()
-        
+
         mats.push(dummy.matrix.clone())
       }
     }
     return mats
-  }, [terrainSettings])
+  }, [terrainSettings, globalSeed, worldShape])
 
   useEffect(() => {
     if (meshRef.current) {
@@ -292,14 +622,14 @@ function WildGrass({ palette, terrainSettings }) {
   )
 }
 
-function EdgeFence({ palette, terrainSettings }) {
+function EdgeFence({ palette, terrainSettings, globalSeed, worldShape }) {
   const posts = useMemo(
     () =>
       Array.from({ length: FENCE_POST_COUNT }, (_, index) => {
         const t = index / FENCE_POST_COUNT
         const side = Math.floor(t * 4)
         const localT = (t * 4) % 1
-        
+
         let x, z
         if (side === 0) {
           x = -FENCE_RADIUS + localT * 2 * FENCE_RADIUS
@@ -314,7 +644,7 @@ function EdgeFence({ palette, terrainSettings }) {
           x = -FENCE_RADIUS
           z = FENCE_RADIUS - localT * 2 * FENCE_RADIUS
         }
-        
+
         return { id: `post-${index}`, x, z }
       }),
     [],
@@ -330,35 +660,35 @@ function EdgeFence({ palette, terrainSettings }) {
         const dz = next.z - post.z
         const segmentLength = Math.hypot(dx, dz)
         const segmentYaw = Math.atan2(dz, dx)
-        const postY =
-          sampleTerrainMeshHeight(post.x, post.z, terrainSettings) + TERRAIN_Y_OFFSET
-        const railY =
-          sampleTerrainMeshHeight(midX, midZ, terrainSettings) + TERRAIN_Y_OFFSET
+        
+        const postY = sampleTerrainMeshHeight(post.x, post.z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        const railY = sampleTerrainMeshHeight(midX, midZ, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+
+        const postMapped = mapToWorld(post.x, postY, post.z, worldShape)
+        const railMapped = mapToWorld(midX, railY, midZ, worldShape)
+
+        const railLocalQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -segmentYaw, 0))
+        const railQuat = railMapped.quaternion.clone().multiply(railLocalQuat)
 
         return (
           <group key={post.id}>
-            <mesh castShadow receiveShadow position={[post.x, postY + 0.75, post.z]}>
-              <cylinderGeometry args={[0.15, 0.18, 1.7, 7]} />
-              <meshStandardMaterial color="#6f5b43" roughness={0.95} />
-            </mesh>
-            <mesh
-              castShadow
-              receiveShadow
-              position={[midX, railY + 1.05, midZ]}
-              rotation={[0, -segmentYaw, 0]}
-            >
-              <boxGeometry args={[segmentLength * 0.92, 0.12, 0.12]} />
-              <meshStandardMaterial color="#725f45" roughness={0.92} />
-            </mesh>
-            <mesh
-              castShadow
-              receiveShadow
-              position={[midX, railY + 0.72, midZ]}
-              rotation={[0, -segmentYaw, 0]}
-            >
-              <boxGeometry args={[segmentLength * 0.92, 0.1, 0.1]} />
-              <meshStandardMaterial color="#6b583f" roughness={0.92} />
-            </mesh>
+            <group position={postMapped.position} quaternion={postMapped.quaternion}>
+              <mesh castShadow receiveShadow position={[0, 0.75, 0]}>
+                <cylinderGeometry args={[0.15, 0.18, 1.7, 7]} />
+                <meshStandardMaterial color="#6f5b43" roughness={0.95} />
+              </mesh>
+            </group>
+            
+            <group position={railMapped.position} quaternion={railQuat}>
+              <mesh castShadow receiveShadow position={[0, 1.05, 0]}>
+                <boxGeometry args={[segmentLength * 0.92, 0.12, 0.12]} />
+                <meshStandardMaterial color="#725f45" roughness={0.92} />
+              </mesh>
+              <mesh castShadow receiveShadow position={[0, 0.72, 0]}>
+                <boxGeometry args={[segmentLength * 0.92, 0.1, 0.1]} />
+                <meshStandardMaterial color="#6b583f" roughness={0.92} />
+              </mesh>
+            </group>
           </group>
         )
       })}
@@ -366,30 +696,48 @@ function EdgeFence({ palette, terrainSettings }) {
   )
 }
 
-function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteractingRef }) {
+function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteractingRef, worldShape }) {
   const desiredTarget = useRef(new THREE.Vector3(0, 1.6, 0))
   const desiredPosition = useRef(new THREE.Vector3(...palette.cameraPosition))
 
   useEffect(() => {
-    desiredPosition.current.set(...palette.cameraPosition)
-    desiredTarget.current.set(0, 1.6, 0)
-  }, [palette])
-
-  useEffect(() => {
     if (!focusTarget) {
-      desiredPosition.current.set(...palette.cameraPosition)
-      desiredTarget.current.set(0, 1.6, 0)
+      if (worldShape === 'globe') {
+         desiredTarget.current.set(0, -GLOBE_RADIUS, 0)
+         desiredPosition.current.set(palette.cameraPosition[0], palette.cameraPosition[1], palette.cameraPosition[2])
+      } else {
+         desiredTarget.current.set(0, 1.6, 0)
+         desiredPosition.current.set(...palette.cameraPosition)
+      }
       return
     }
 
-    desiredTarget.current.set(focusTarget.x, 1.8, focusTarget.z)
-    desiredPosition.current.set(focusTarget.x + 12, 9, focusTarget.z + 12)
-  }, [focusTarget, palette])
-
-  useFrame((_, delta) => {
-    if (!cameraRef.current || !focusTarget || isInteractingRef.current) {
-      return
+    if (worldShape === 'globe') {
+      const tMapped = mapToWorld(focusTarget.x, 1.8, focusTarget.z, worldShape)
+      desiredTarget.current.set(tMapped.position[0], tMapped.position[1], tMapped.position[2])
+      
+      const normal = new THREE.Vector3(tMapped.position[0], tMapped.position[1] + GLOBE_RADIUS, tMapped.position[2]).normalize()
+      desiredPosition.current.set(
+        tMapped.position[0] + normal.x * 12 + normal.z * 10,
+        tMapped.position[1] + normal.y * 12 + 4,
+        tMapped.position[2] + normal.z * 12 - normal.x * 10
+      )
+    } else {
+      desiredTarget.current.set(focusTarget.x, 1.8, focusTarget.z)
+      desiredPosition.current.set(focusTarget.x + 12, 9, focusTarget.z + 12)
     }
+  }, [focusTarget, palette, worldShape])
+
+  useFrame((state, delta) => {
+    if (!cameraRef.current) return
+
+    // ── Hard floor: camera must never go below terrain surface ──
+    const MIN_CAM_Y = worldShape === 'globe' ? -GLOBE_RADIUS + 3 : 1.2
+    if (cameraRef.current.position.y < MIN_CAM_Y) {
+      cameraRef.current.position.y = MIN_CAM_Y
+    }
+
+    if (!focusTarget || isInteractingRef.current) return
 
     cameraRef.current.position.x = THREE.MathUtils.damp(
       cameraRef.current.position.x,
@@ -399,7 +747,7 @@ function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteracting
     )
     cameraRef.current.position.y = THREE.MathUtils.damp(
       cameraRef.current.position.y,
-      desiredPosition.current.y,
+      Math.max(MIN_CAM_Y, desiredPosition.current.y),
       2.3,
       delta,
     )
@@ -436,6 +784,138 @@ function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteracting
   return null
 }
 
+// ── Keyboard camera pan (WASD / arrow keys) ───────────────────────────────────
+const _fwd  = new THREE.Vector3()
+const _rgt  = new THREE.Vector3()
+const _move = new THREE.Vector3()
+const _up   = new THREE.Vector3(0, 1, 0)
+
+function KeyboardCameraController({ controlsRef, cameraRef }) {
+  const keys = useRef(new Set())
+
+  useEffect(() => {
+    const onDown = e => keys.current.add(e.code)
+    const onUp   = e => keys.current.delete(e.code)
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup',   onUp)
+    return () => {
+      window.removeEventListener('keydown', onDown)
+      window.removeEventListener('keyup',   onUp)
+    }
+  }, [])
+
+  useFrame((_, delta) => {
+    if (!controlsRef.current || !cameraRef.current) return
+    // Don’t steal keys while user is typing
+    const tag = document.activeElement?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+    const k = keys.current
+    const fwd = k.has('KeyW') || k.has('ArrowUp')
+    const bck = k.has('KeyS') || k.has('ArrowDown')
+    const lft = k.has('KeyA') || k.has('ArrowLeft')
+    const rgt = k.has('KeyD') || k.has('ArrowRight')
+    if (!fwd && !bck && !lft && !rgt) return
+
+    const speed = 14 * delta
+    const cam   = cameraRef.current
+    const ctrl  = controlsRef.current
+
+    // Forward = direction from camera toward target, flattened to XZ
+    _fwd.subVectors(ctrl.target, cam.position).setY(0).normalize()
+    _rgt.crossVectors(_fwd, _up).normalize()
+
+    _move.set(0, 0, 0)
+    if (fwd) _move.addScaledVector(_fwd,  speed)
+    if (bck) _move.addScaledVector(_fwd, -speed)
+    if (lft) _move.addScaledVector(_rgt, -speed)
+    if (rgt) _move.addScaledVector(_rgt,  speed)
+
+    cam.position.add(_move)
+    ctrl.target.add(_move)
+    cam.position.y = Math.max(1.2, cam.position.y)
+    ctrl.update()
+  })
+
+  return null
+}
+
+function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hoveredAreaId }) {
+  const geometry = useMemo(() => {
+    const size = area.radius * 2 + 1
+    const segments = Math.max(16, Math.floor(area.radius * 2.5))
+    const geom = new THREE.PlaneGeometry(size, size, segments, segments)
+    const pos = geom.attributes.position
+    const colors = new Float32Array(pos.count * 4)
+
+    for (let i = 0; i < pos.count; i++) {
+      const lx = pos.getX(i)
+      const lz = -pos.getY(i)
+      
+      const x = area.centerX + lx
+      const z = area.centerZ + lz
+
+      const dist = Math.hypot(lx, lz)
+      let alpha = 1.0
+      if (dist > area.radius) {
+        alpha = 0
+      } else if (dist > area.radius - 0.2) {
+        alpha = (area.radius - dist) / 0.2
+      }
+
+      const y = sampleTerrainMeshHeight(x, z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.14
+      
+      const mapped = mapToWorld(x, y, z, worldShape)
+      pos.setXYZ(i, mapped.position[0], mapped.position[1], mapped.position[2])
+
+      colors[i * 4] = 1
+      colors[i * 4 + 1] = 1
+      colors[i * 4 + 2] = 1
+      colors[i * 4 + 3] = alpha
+    }
+
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+    geom.computeVertexNormals()
+    return geom
+  }, [area, terrainSettings, globalSeed, worldShape])
+
+  return (
+    <mesh geometry={geometry}>
+      <meshStandardMaterial
+        color={area.leafColor}
+        transparent={true}
+        vertexColors={true}
+        opacity={hoveredAreaId === area.habitId ? 0.34 : 0.2}
+        depthWrite={false}
+      />
+    </mesh>
+  )
+}
+
+function HabitAreaBorder({ area, terrainSettings, globalSeed, worldShape }) {
+  const geometry = useMemo(() => {
+    const geom = new THREE.BufferGeometry()
+    const points = []
+    for (let i = 0; i <= 64; i++) {
+      const angle = (i / 64) * Math.PI * 2
+      const x = area.centerX + Math.cos(angle) * area.radius
+      const z = area.centerZ + Math.sin(angle) * area.radius
+      const y = sampleTerrainMeshHeight(x, z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.18
+      
+      const mapped = mapToWorld(x, y, z, worldShape)
+      points.push(mapped.position[0], mapped.position[1], mapped.position[2])
+    }
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+    return geom
+  }, [area, terrainSettings, globalSeed, worldShape])
+
+  return (
+    <line geometry={geometry}>
+      <lineBasicMaterial color={area.leafColor} />
+    </line>
+  )
+}
+
 function HabitAreas({
   areas,
   hoveredAreaId,
@@ -444,6 +924,8 @@ function HabitAreas({
   visible,
   onSelectArea,
   terrainSettings,
+  globalSeed,
+  worldShape,
 }) {
   if (!visible) {
     return null
@@ -451,98 +933,35 @@ function HabitAreas({
 
   return (
     <group>
-      {areas.map((area) => (
-        <group key={area.habitId}>
-          <mesh
-            rotation={[-Math.PI / 2, 0, 0]}
-            position={[
-              area.centerX,
-              sampleTerrainMeshHeight(
-                area.centerX,
-                area.centerZ,
-                terrainSettings,
-              ) +
-                TERRAIN_Y_OFFSET +
-                0.14,
-              area.centerZ,
-            ]}
-            onPointerOver={(event) => {
-              event.stopPropagation()
-              onHoverArea(area)
-            }}
-            onPointerOut={(event) => {
-              event.stopPropagation()
-              onLeaveArea()
-            }}
-            onClick={(event) => {
-              event.stopPropagation()
-              onSelectArea(area)
-            }}
-          >
-            <circleGeometry args={[area.radius, 48]} />
-            <meshStandardMaterial
-              color={area.leafColor}
-              transparent
-              opacity={hoveredAreaId === area.habitId ? 0.34 : 0.2}
-            />
-          </mesh>
-          <line
-            position={[
-              area.centerX,
-              sampleTerrainMeshHeight(
-                area.centerX,
-                area.centerZ,
-                terrainSettings,
-              ) +
-                TERRAIN_Y_OFFSET +
-                0.18,
-              area.centerZ,
-            ]}
-          >
-            <bufferGeometry>
-              <bufferAttribute
-                attach="attributes-position"
-                args={[
-                  new Float32Array(
-                    Array.from({ length: 65 }, (_, index) => {
-                      const angle = (index / 64) * Math.PI * 2
-                      return [
-                        Math.cos(angle) * area.radius,
-                        0,
-                        Math.sin(angle) * area.radius,
-                      ]
-                    }).flat(),
-                  ),
-                  3,
-                ]}
-              />
-            </bufferGeometry>
-            <lineBasicMaterial color={area.leafColor} />
-          </line>
-          {hoveredAreaId === area.habitId ? (
-            <Html
-              position={[
-                area.centerX,
-                sampleTerrainMeshHeight(
-                  area.centerX,
-                  area.centerZ,
-                  terrainSettings,
-                ) +
-                  TERRAIN_Y_OFFSET +
-                  1.4,
-                area.centerZ,
-              ]}
-              center
+      {areas.map((area) => {
+        const labelY = sampleTerrainMeshHeight(area.centerX, area.centerZ, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 1.4
+        const labelMapped = mapToWorld(area.centerX, labelY, area.centerZ, worldShape)
+
+        return (
+          <group key={area.habitId}>
+            <group
+              onPointerOver={(event) => {
+                event.stopPropagation()
+                onHoverArea(area)
+              }}
+              onPointerOut={(event) => {
+                event.stopPropagation()
+                onLeaveArea()
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onSelectArea(area)
+              }}
             >
-              <div className="pointer-events-none rounded-xl border border-white/20 bg-[rgba(12,28,20,0.85)] px-3 py-2 text-xs text-[#eef8ea] shadow-xl">
-                <p className="font-semibold">{area.habitName}</p>
-                <p className="mt-1">{area.daysCompleted} days completed</p>
-                <p>{area.treeCount} trees in this area</p>
-              </div>
-            </Html>
-          ) : null}
-        </group>
-      ))}
+              <HabitAreaShape area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} hoveredAreaId={hoveredAreaId} />
+            </group>
+            
+            <HabitAreaBorder area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+            
+
+          </group>
+        )
+      })}
     </group>
   )
 }
@@ -556,12 +975,14 @@ function SceneContents({
   onTreeSelect,
   onAreaHover,
   terrainSettings,
+  globalSeed,
 }) {
+  const worldShape = 'plane'   // globe mode removed
   const cameraRef = useRef(null)
   const controlsRef = useRef(null)
   const isInteractingRef = useRef(false)
   const [hoveredAreaId, setHoveredAreaId] = useState(null)
-  const palette = TIME_PRESETS[timeOfDay]
+  const palette = interpolatePalette(timeOfDay)
   const areas = useMemo(
     () =>
       habits
@@ -597,7 +1018,7 @@ function SceneContents({
   return (
     <>
       <color attach="background" args={[palette.background]} />
-      <fog attach="fog" args={[palette.fog, 32, 140]} />
+      <fog attach="fog" args={[palette.fog, 60, 220]} />
 
       <PerspectiveCamera
         ref={cameraRef}
@@ -612,7 +1033,10 @@ function SceneContents({
         focusTarget={focusTarget}
         palette={palette}
         isInteractingRef={isInteractingRef}
+        worldShape={worldShape}
       />
+
+      <KeyboardCameraController controlsRef={controlsRef} cameraRef={cameraRef} />
 
       <ambientLight intensity={palette.ambient} color={palette.skyTint} />
 
@@ -642,12 +1066,14 @@ function SceneContents({
         sunPosition={palette.sunPosition}
         inclination={0.52}
         azimuth={0.22}
-        rayleigh={1.9}
-        turbidity={7}
+        rayleigh={lerpN(1.9, 0.5, Math.max(0, (timeOfDay - 0.5) * 2))}
+        turbidity={lerpN(7, 10, Math.max(0, (timeOfDay - 0.5) * 2))}
       />
 
+      <SunDisc sunPosition={palette.sunPosition} sunColor={palette.sunColor} />
+
       <Sparkles
-        count={timeOfDay === 'dusk' ? 34 : 18}
+        count={timeOfDay > 0.75 ? 34 : 18}
         color={palette.sparkle}
         scale={[44, 12, 44]}
         position={[0, 4, 0]}
@@ -656,11 +1082,14 @@ function SceneContents({
         opacity={0.22}
       />
 
-      <AmbientLife palette={palette} terrainSettings={terrainSettings} allTrees={allTrees} habits={habits} />
-      <Ground palette={palette} terrainSettings={terrainSettings} />
-      <WildGrass palette={palette} terrainSettings={terrainSettings} />
-      <Rocks palette={palette} terrainSettings={terrainSettings} />
-      <EdgeFence palette={palette} terrainSettings={terrainSettings} />
+      <AmbientLife palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} allTrees={allTrees} habits={habits} worldShape={worldShape} />
+      <Water worldShape={worldShape} />
+      <WaterRipples worldShape={worldShape} />
+      <Ground palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <WildGrass palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <Rocks  palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <Bushes palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <EdgeFence palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
       <HabitAreas
         areas={areas}
         hoveredAreaId={hoveredAreaId}
@@ -674,44 +1103,65 @@ function SceneContents({
         }}
         visible={viewMode === 'areas'}
         terrainSettings={terrainSettings}
+        globalSeed={globalSeed}
+        worldShape={worldShape}
         onSelectArea={(area) => {
-          controlsRef.current?.target.set(area.centerX, 0.8, area.centerZ)
+          if (worldShape === 'globe') {
+             const tMapped = mapToWorld(area.centerX, 1.8, area.centerZ, worldShape)
+             controlsRef.current?.target.set(tMapped.position[0], tMapped.position[1], tMapped.position[2])
+          } else {
+             controlsRef.current?.target.set(area.centerX, 0.8, area.centerZ)
+          }
           controlsRef.current?.update()
         }}
       />
 
       {habits.flatMap((habit) =>
-        habit.trees.map((tree) => (
-          <Tree
-            key={tree.id}
-            species={habit.species}
-            tree={tree}
-            baseY={
-              sampleTerrainMeshHeight(tree.x, tree.z, terrainSettings) +
-              TERRAIN_Y_OFFSET -
-              TREE_GROUND_EMBED
-            }
-            isSelected={selectedTreeId === tree.id}
-            onSelect={() =>
-              onTreeSelect?.({
-                treeId: tree.id,
-                habitId: habit.id,
-                habitName: habit.name,
-                plantedAt: tree.plantedAt,
-                treeCount: habit.trees.length,
-                daysCompleted: new Set(
-                  habit.trees.map((item) => new Date(item.plantedAt).toDateString()),
-                ).size,
-                position: { x: tree.x, z: tree.z },
-                species: {
-                  canopyType: habit.species.canopyType,
-                  leafColor: habit.species.leafColor,
-                  barkColor: habit.species.barkColor,
-                },
-              })
-            }
-          />
-        )),
+        habit.trees.map((tree) => {
+          let tx = tree.x
+          let tz = tree.z
+          let y = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
+
+          if (y < WATER_LEVEL + 0.3) {
+            const dryPos = findDryLand(tx, tz, terrainSettings, globalSeed)
+            tx = dryPos.x
+            tz = dryPos.z
+            y = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
+          }
+
+          const mapped = mapToWorld(tx, y, tz, worldShape)
+
+          return (
+            <Tree
+              key={tree.id}
+              species={habit.species}
+              tree={tree}
+              mappedPosition={mapped.position}
+              mappedQuaternion={mapped.quaternion}
+              isSelected={selectedTreeId === tree.id}
+              onSelect={() =>
+                onTreeSelect?.({
+                  treeId: tree.id,
+                  habitId: habit.id,
+                  habitName: habit.name,
+                  plantedAt: tree.plantedAt,
+                  treeCount: habit.trees.length,
+                  daysCompleted: new Set(
+                    habit.trees.map((item) => new Date(item.plantedAt).toDateString()),
+                  ).size,
+                  streak:    getHabitStreak(habit),
+                  milestone: getMilestone(habit.trees.length),
+                  position: { x: tx, z: tz },
+                  species: {
+                    canopyType: habit.species.canopyType,
+                    leafColor:  habit.species.leafColor,
+                    barkColor:  habit.species.barkColor,
+                  },
+                })
+              }
+            />
+          )
+        }),
       )}
 
       <OrbitControls
@@ -722,7 +1172,7 @@ function SceneContents({
         onEnd={() => {
           isInteractingRef.current = false
         }}
-        enablePan
+        enablePan={worldShape !== 'globe'}
         enableRotate
         enableZoom
         enableDamping
@@ -730,11 +1180,11 @@ function SceneContents({
         rotateSpeed={0.7}
         zoomSpeed={0.9}
         panSpeed={0.85}
-        maxPolarAngle={Math.PI / 1.98}
+        maxPolarAngle={Math.PI * 0.455}  // ~82° — keeps camera above the terrain
         minPolarAngle={Math.PI / 10}
-        minDistance={7}
-        maxDistance={120}
-        screenSpacePanning
+        minDistance={worldShape === 'globe' ? GLOBE_RADIUS + 5 : 7}
+        maxDistance={worldShape === 'globe' ? GLOBE_RADIUS + 60 : 120}
+        screenSpacePanning={false}
         mouseButtons={{
           LEFT: THREE.MOUSE.PAN,
           MIDDLE: THREE.MOUSE.DOLLY,
@@ -758,6 +1208,7 @@ function ForestScene({
   onTreeSelect,
   onAreaHover,
   terrainSettings,
+  globalSeed,
 }) {
   return (
     <Canvas
@@ -778,6 +1229,7 @@ function ForestScene({
         onTreeSelect={onTreeSelect}
         onAreaHover={onAreaHover}
         terrainSettings={terrainSettings}
+        globalSeed={globalSeed}
       />
     </Canvas>
   )

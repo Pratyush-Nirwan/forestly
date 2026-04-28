@@ -81,7 +81,7 @@ function LeafCluster({ type, color, scale, position }) {
   )
 }
 
-function Tree({ species, tree, onSelect, isSelected, baseY = 0 }) {
+function Tree({ species, tree, onSelect, isSelected, mappedPosition, mappedQuaternion }) {
   const groupRef = useRef(null)
   const canopyRef = useRef(null)
   const clusters = createLeafClusters(species, tree)
@@ -132,14 +132,15 @@ function Tree({ species, tree, onSelect, isSelected, baseY = 0 }) {
 
   return (
     <group
-      position={[tree.x, baseY, tree.z]}
-      rotation={[0, tree.rotation, 0]}
+      position={mappedPosition}
+      quaternion={mappedQuaternion}
       onClick={(event) => {
         event.stopPropagation()
         onSelect?.(tree)
       }}
     >
-      <group ref={groupRef} rotation={[tree.leanX, 0, tree.leanZ]}>
+      <group rotation={[0, tree.rotation, 0]}>
+        <group ref={groupRef} rotation={[tree.leanX, 0, tree.leanZ]}>
         <mesh
           castShadow
           receiveShadow
@@ -170,6 +171,7 @@ function Tree({ species, tree, onSelect, isSelected, baseY = 0 }) {
             />
           ))}
         </group>
+      </group>
       </group>
     </group>
   )
