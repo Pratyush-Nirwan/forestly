@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  useCallback,
   useDeferredValue,
   useEffect,
   useRef,
@@ -8,6 +9,7 @@ import {
   useTransition,
 } from 'react'
 import HabitPanel from './components/HabitPanel'
+import OnboardingFlow, { isOnboardingComplete } from './components/OnboardingFlow'
 import {
   completeHabitForToday,
   createHabitRecord,
@@ -105,6 +107,38 @@ function ControlsOnboardingModal({ onDismiss }) {
   )
 }
 
+// ── Grove info panel ─────────────────────────────────────────────────────────
+// Owns its own state so App.jsx never re-renders on area hover.
+// The parent registers a setter into `setterRef` without storing state itself.
+function GroveInfoPanel({ setterRef, hidden }) {
+  const [info, setInfo] = useState(null)
+  // Register the setter — stable ref, safe to assign during render
+  setterRef.current = setInfo
+
+  if (!info || hidden) return null
+  return (
+    <div className="pointer-events-none absolute bottom-20 left-3 right-3 z-30 md:bottom-6 md:left-auto md:right-6 md:w-72">
+      <div className="forest-panel pointer-events-auto rounded-[24px] px-5 py-4 text-[#eef8ea]">
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">
+          Grove Overview
+        </p>
+        <p className="mt-2 text-base font-bold text-white">{info.habitName}</p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+            <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Days</p>
+            <p className="mt-1 text-lg font-bold text-white">{info.daysCompleted}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+            <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Trees</p>
+            <p className="mt-1 text-lg font-bold text-white">{info.treeCount}</p>
+          </div>
+        </div>
+        <p className="mt-2.5 text-xs text-[#d4e4cc]/50">Click the area to zoom in</p>
+      </div>
+    </div>
+  )
+}
+
 const ForestScene = lazy(() => import('./components/ForestScene'))
 const TERRAIN_SLIDERS = [
   {
@@ -145,26 +179,48 @@ function App() {
   const [focusTarget, setFocusTarget] = useState(null)
   const [viewMode, setViewMode] = useState('forest')
   const [selectedTreeInfo, setSelectedTreeInfo] = useState(null)
-  const [hoveredAreaInfo, setHoveredAreaInfo] = useState(null)
+  const areaInfoSetterRef = useRef(null)
   const [terrainSettings, setTerrainSettings] = useState(loadTerrainSettings)
   const [isPending, startTransition] = useTransition()
-  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [showControlsTutorial, setShowControlsTutorial] = useState(false)
+  const [showNewOnboarding, setShowNewOnboarding] = useState(false)
   const deferredHabits = useDeferredValue(habits)
   const pendingFocusRef = useRef(null)
   const todayStamp = getTodayStamp()
   const forestTotals = getForestTotals(habits)
   const sceneDateLabel = getSceneDateLabel()
 
-  // Show onboarding on first visit
+  // Show new onboarding on first visit
   useEffect(() => {
-    if (!localStorage.getItem(CONTROLS_SEEN_KEY)) {
-      setShowOnboarding(true)
+    if (!isDemo && !isOnboardingComplete()) {
+      setShowNewOnboarding(true)
+    } else if (!localStorage.getItem(CONTROLS_SEEN_KEY)) {
+      setShowControlsTutorial(true)
     }
+  }, [isDemo])
+
+  const handleOnboardingComplete = useCallback((onboardingHabits) => {
+    // Create habits from onboarding
+    if (onboardingHabits.length > 0) {
+      startTransition(() => {
+        setHabits(current => {
+          let allHabits = current
+          onboardingHabits.forEach(name => {
+            const result = createHabitRecord(name, allHabits)
+            allHabits = result.nextHabits
+          })
+          return allHabits
+        })
+      })
+    }
+    setShowNewOnboarding(false)
+    // Show controls tutorial after new onboarding
+    setShowControlsTutorial(true)
   }, [])
 
-  function handleDismissOnboarding() {
+  function handleDismissControlsTutorial() {
     localStorage.setItem(CONTROLS_SEEN_KEY, '1')
-    setShowOnboarding(false)
+    setShowControlsTutorial(false)
   }
 
   useEffect(() => {
@@ -259,7 +315,7 @@ function App() {
           terrainSettings={terrainSettings}
           selectedTreeId={selectedTreeInfo?.treeId ?? null}
           onTreeSelect={setSelectedTreeInfo}
-          onAreaHover={setHoveredAreaInfo}
+          onAreaHover={(area) => areaInfoSetterRef.current?.(area)}
           globalSeed={globalSeed}
         />
       </Suspense>
@@ -297,81 +353,65 @@ function App() {
         />
 
         {/* ── Bottom info panel ── */}
-        {(selectedTreeInfo || hoveredAreaInfo) && (
+        {selectedTreeInfo && (
           <div className="pointer-events-none absolute bottom-20 left-3 right-3 z-30 md:bottom-6 md:left-auto md:right-6 md:w-72">
             <div className="forest-panel pointer-events-auto rounded-[24px] px-5 py-4 text-[#eef8ea]">
-              {selectedTreeInfo ? (
-                <>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">
-                    Selected Tree
-                  </p>
-                  <div className="mt-2 flex items-start justify-between gap-3">
-                    <p className="text-base font-bold text-white leading-tight">{selectedTreeInfo.habitName}</p>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      {selectedTreeInfo.streak > 0 && (
-                        <span className="rounded-full bg-orange-500/25 px-2 py-0.5 text-xs font-semibold text-orange-300">
-                          🔥 {selectedTreeInfo.streak}d
-                        </span>
-                      )}
-                      {selectedTreeInfo.milestone && (
-                        <span className="rounded-full border border-white/15 px-2 py-0.5 text-xs text-[#d4e4cc]/80">
-                          {selectedTreeInfo.milestone.emoji} {selectedTreeInfo.milestone.label}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <span
-                      className="h-3 w-3 rounded-full border border-white/20 shrink-0"
-                      style={{ backgroundColor: selectedTreeInfo.species.leafColor }}
-                    />
-                    <span
-                      className="h-3 w-3 rounded-full border border-white/20 shrink-0"
-                      style={{ backgroundColor: selectedTreeInfo.species.barkColor }}
-                    />
-                    <span className="text-xs text-[#dce9d6]/65 capitalize">{selectedTreeInfo.species.canopyType} canopy</span>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
-                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Days</p>
-                      <p className="mt-1 text-lg font-bold text-white">{selectedTreeInfo.daysCompleted}</p>
-                    </div>
-                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
-                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Trees</p>
-                      <p className="mt-1 text-lg font-bold text-white">{selectedTreeInfo.treeCount}</p>
-                    </div>
-                  </div>
-                  <p className="mt-2.5 text-xs text-[#d4e4cc]/50">
-                    Planted {new Date(selectedTreeInfo.plantedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </p>
-                </>
-              ) : hoveredAreaInfo ? (
-                <>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">
-                    Grove Overview
-                  </p>
-                  <p className="mt-2 text-base font-bold text-white">{hoveredAreaInfo.habitName}</p>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
-                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Days</p>
-                      <p className="mt-1 text-lg font-bold text-white">{hoveredAreaInfo.daysCompleted}</p>
-                    </div>
-                    <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
-                      <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Trees</p>
-                      <p className="mt-1 text-lg font-bold text-white">{hoveredAreaInfo.treeCount}</p>
-                    </div>
-                  </div>
-                  <p className="mt-2.5 text-xs text-[#d4e4cc]/50">Click the area to zoom in</p>
-                </>
-              ) : null}
+              <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#d4e4cc]/60">
+                Selected Tree
+              </p>
+              <div className="mt-2 flex items-start justify-between gap-3">
+                <p className="text-base font-bold text-white leading-tight">{selectedTreeInfo.habitName}</p>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {selectedTreeInfo.streak > 0 && (
+                    <span className="rounded-full bg-orange-500/25 px-2 py-0.5 text-xs font-semibold text-orange-300">
+                      🔥 {selectedTreeInfo.streak}d
+                    </span>
+                  )}
+                  {selectedTreeInfo.milestone && (
+                    <span className="rounded-full border border-white/15 px-2 py-0.5 text-xs text-[#d4e4cc]/80">
+                      {selectedTreeInfo.milestone.emoji} {selectedTreeInfo.milestone.label}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <span
+                  className="h-3 w-3 rounded-full border border-white/20 shrink-0"
+                  style={{ backgroundColor: selectedTreeInfo.species.leafColor }}
+                />
+                <span
+                  className="h-3 w-3 rounded-full border border-white/20 shrink-0"
+                  style={{ backgroundColor: selectedTreeInfo.species.barkColor }}
+                />
+                <span className="text-xs text-[#dce9d6]/65 capitalize">{selectedTreeInfo.species.canopyType} canopy</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+                  <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Days</p>
+                  <p className="mt-1 text-lg font-bold text-white">{selectedTreeInfo.daysCompleted}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/15 px-3 py-2 text-center">
+                  <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/50">Trees</p>
+                  <p className="mt-1 text-lg font-bold text-white">{selectedTreeInfo.treeCount}</p>
+                </div>
+              </div>
+              <p className="mt-2.5 text-xs text-[#d4e4cc]/50">
+                Planted {new Date(selectedTreeInfo.plantedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </p>
             </div>
           </div>
         )}
+        <GroveInfoPanel setterRef={areaInfoSetterRef} hidden={!!selectedTreeInfo} />
       </div>
 
-      {/* ── First-visit controls onboarding ── */}
-      {showOnboarding && (
-        <ControlsOnboardingModal onDismiss={handleDismissOnboarding} />
+      {/* ── New user onboarding flow (name + habits + loading + tutorial) ── */}
+      {showNewOnboarding && (
+        <OnboardingFlow onComplete={handleOnboardingComplete} />
+      )}
+
+      {/* ── Controls tutorial (shown after onboarding or for returning users) ── */}
+      {showControlsTutorial && (
+        <ControlsOnboardingModal onDismiss={handleDismissControlsTutorial} />
       )}
     </main>
   )

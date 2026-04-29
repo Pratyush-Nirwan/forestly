@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Html, OrbitControls, PerspectiveCamera, Sky, Sparkles } from '@react-three/drei'
 import * as THREE from 'three'
@@ -840,89 +840,238 @@ function KeyboardCameraController({ controlsRef, cameraRef }) {
   return null
 }
 
-function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hoveredAreaId }) {
-  const geometry = useMemo(() => {
-    const size = area.radius * 2 + 1
-    const segments = Math.max(16, Math.floor(area.radius * 2.5))
-    const geom = new THREE.PlaneGeometry(size, size, segments, segments)
-    const pos = geom.attributes.position
-    const colors = new Float32Array(pos.count * 4)
+// ── Organic blob helper ───────────────────────────────────────────────────────
+// Each tree broadcasts its distance across ±SPREAD neighbouring sectors using
+// a cosine falloff (no single tree creates a spike). Then many passes of a
+// wide box-blur round out the envelope completely, and gentle low-frequency
+// noise adds an organic wobble without spikiness.
+function buildBlobRadii(trees, cx, cz, sectors, padding, noiseAmp, noiseFreq) {
+  const raw = new Float32Array(sectors)
 
-    for (let i = 0; i < pos.count; i++) {
-      const lx = pos.getX(i)
-      const lz = -pos.getY(i)
-      
-      const x = area.centerX + lx
-      const z = area.centerZ + lz
+  // ── 1. Broadcast each tree's radius to nearby sectors ──────────────────────
+  // Narrower SPREAD than before so the blob still tracks the cluster shape.
+  const SPREAD = Math.ceil(sectors / 14)   // ~5 sectors each side — half as wide as before
+  for (const t of trees) {
+    const dx   = t.x - cx
+    const dz   = t.z - cz
+    const dist = Math.hypot(dx, dz)
+    const angle   = Math.atan2(dz, dx)
+    const fBucket = ((angle / (Math.PI * 2)) * sectors % sectors + sectors) % sectors
+    const center  = Math.floor(fBucket)
 
-      const dist = Math.hypot(lx, lz)
-      let alpha = 1.0
-      if (dist > area.radius) {
-        alpha = 0
-      } else if (dist > area.radius - 0.2) {
-        alpha = (area.radius - dist) / 0.2
+    for (let s = -SPREAD; s <= SPREAD; s++) {
+      const idx    = ((center + s) % sectors + sectors) % sectors
+      const weight = Math.cos((s / (SPREAD + 1)) * Math.PI * 0.5)
+      raw[idx] = Math.max(raw[idx], dist * weight)
+    }
+  }
+
+  // ── 2. Fill empty sectors from neighbours ──────────────────────────────────
+  let minR = Infinity
+  for (let i = 0; i < sectors; i++) if (raw[i] > 0) minR = Math.min(minR, raw[i])
+  if (!isFinite(minR)) minR = 0
+  for (let i = 0; i < sectors; i++) if (raw[i] === 0) raw[i] = minR
+
+  // ── 3. Light smoothing — just enough to remove hard kinks ─────────────────
+  // 5 passes of a 5-tap kernel: smooths without collapsing the shape.
+  const BLUR_PASSES = 5
+  const HALF = 2   // 5-tap: -2 … +2
+  const W = []
+  let wSum = 0
+  for (let k = -HALF; k <= HALF; k++) {
+    const w = Math.cos((k / (HALF + 1)) * Math.PI * 0.5)
+    W.push(w); wSum += w
+  }
+  for (let k = 0; k < W.length; k++) W[k] /= wSum
+
+  let buf = new Float32Array(raw)
+  const tmp = new Float32Array(sectors)
+  for (let pass = 0; pass < BLUR_PASSES; pass++) {
+    for (let i = 0; i < sectors; i++) {
+      let v = 0
+      for (let k = 0; k < W.length; k++) {
+        v += buf[((i + k - HALF) % sectors + sectors) % sectors] * W[k]
       }
+      tmp[i] = v
+    }
+    buf.set(tmp)
+  }
 
-      const y = sampleTerrainMeshHeight(x, z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.14
-      
-      const mapped = mapToWorld(x, y, z, worldShape)
-      pos.setXYZ(i, mapped.position[0], mapped.position[1], mapped.position[2])
+  // ── 4. Padding + gentle organic noise ──────────────────────────────────────
+  for (let i = 0; i < sectors; i++) {
+    const angle = (i / sectors) * Math.PI * 2
+    const noise =
+      Math.sin(angle * noiseFreq             ) * noiseAmp +
+      Math.sin(angle * noiseFreq * 1.7 + 0.9) * noiseAmp * 0.4
+    buf[i] = Math.max(1.0, buf[i] + padding + noise)
+  }
 
-      colors[i * 4] = 1
-      colors[i * 4 + 1] = 1
-      colors[i * 4 + 2] = 1
-      colors[i * 4 + 3] = alpha
+  return buf
+}
+
+function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hoveredAreaIdRef }) {
+  const fillMatRef = useRef(null)
+
+  useFrame((state) => {
+    if (!fillMatRef.current) return
+    const isHov = hoveredAreaIdRef.current === area.habitId
+    const base  = isHov ? 0.38 : 0.22
+    const pulse = isHov ? Math.sin(state.clock.elapsedTime * 2.4) * 0.07 : 0
+    fillMatRef.current.opacity = base + pulse
+  })
+
+  const geometry = useMemo(() => {
+    const { centerX: cx, centerZ: cz, trees } = area
+    const SECTORS = 72
+    const PAD = 6.0           // generous wrap-around padding
+    // Gentle, large-scale noise seeded per habit for organic uniqueness
+    const seedVal   = area.habitId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const noiseAmp  = 0.25 + (seedVal % 5) * 0.04   // 0.25 – 0.41  (subtle)
+    const noiseFreq = 2    + (seedVal % 3)           // 2 – 4         (low freq only)
+
+    const radii = buildBlobRadii(trees, cx, cz, SECTORS, PAD, noiseAmp, noiseFreq)
+
+    // Build a triangulated fan from the centre outward
+    // Each sector becomes 2 triangles with a sub-division ring at 60 % so the
+    // fill looks smooth over undulating terrain.
+    const positions = []
+    const colorArr  = []
+
+    function pushVertex(wx, wz, alpha) {
+      const wy = sampleTerrainMeshHeight(wx, wz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.14
+      const m  = mapToWorld(wx, wy, wz, worldShape)
+      positions.push(...m.position)
+      colorArr.push(1, 1, 1, alpha)
     }
 
-    geom.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+    for (let i = 0; i < SECTORS; i++) {
+      const a0 = (i       / SECTORS) * Math.PI * 2
+      const a1 = ((i + 1) / SECTORS) * Math.PI * 2
+      const r0 = radii[i]
+      const r1 = radii[(i + 1) % SECTORS]
+      const rMid = (r0 + r1) / 2 * 0.6   // inner ring radius
+
+      // 4 points: centre, inner-left, inner-right, outer-left, outer-right
+      const innerL = { x: cx + Math.cos(a0) * rMid, z: cz + Math.sin(a0) * rMid }
+      const innerR = { x: cx + Math.cos(a1) * rMid, z: cz + Math.sin(a1) * rMid }
+      const outerL = { x: cx + Math.cos(a0) * r0,   z: cz + Math.sin(a0) * r0   }
+      const outerR = { x: cx + Math.cos(a1) * r1,   z: cz + Math.sin(a1) * r1   }
+
+      // Tri 1: centre → innerL → innerR
+      pushVertex(cx, cz, 1.0)
+      pushVertex(innerL.x, innerL.z, 1.0)
+      pushVertex(innerR.x, innerR.z, 1.0)
+
+      // Tri 2: innerL → outerL → innerR
+      pushVertex(innerL.x, innerL.z, 1.0)
+      pushVertex(outerL.x, outerL.z, 0.0)
+      pushVertex(innerR.x, innerR.z, 1.0)
+
+      // Tri 3: outerL → outerR → innerR
+      pushVertex(outerL.x, outerL.z, 0.0)
+      pushVertex(outerR.x, outerR.z, 0.0)
+      pushVertex(innerR.x, innerR.z, 1.0)
+    }
+
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geom.setAttribute('color',    new THREE.Float32BufferAttribute(colorArr,  4))
     geom.computeVertexNormals()
     return geom
   }, [area, terrainSettings, globalSeed, worldShape])
 
+  useEffect(() => () => geometry.dispose(), [geometry])
+
   return (
     <mesh geometry={geometry}>
       <meshStandardMaterial
+        ref={fillMatRef}
         color={area.leafColor}
         transparent={true}
         vertexColors={true}
-        opacity={hoveredAreaId === area.habitId ? 0.34 : 0.2}
+        opacity={0.22}
         depthWrite={false}
+        side={THREE.DoubleSide}
       />
     </mesh>
   )
 }
 
-function HabitAreaBorder({ area, terrainSettings, globalSeed, worldShape }) {
+const _WHITE = new THREE.Color(1, 1, 1)
+
+function HabitAreaBorder({ area, terrainSettings, globalSeed, worldShape, hoveredAreaIdRef }) {
+  const innerMatRef = useRef(null)
+  const outerMatRef = useRef(null)
+  const glowT       = useRef(0)
+  const baseColor   = useMemo(() => new THREE.Color(area.leafColor), [area.leafColor])
+
   const geometry = useMemo(() => {
-    const geom = new THREE.BufferGeometry()
+    const { centerX: cx, centerZ: cz, trees } = area
+    const SECTORS = 72
+    const PAD = 6.0
+    const seedVal   = area.habitId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const noiseAmp  = 0.25 + (seedVal % 5) * 0.04
+    const noiseFreq = 2    + (seedVal % 3)
+
+    const radii = buildBlobRadii(trees, cx, cz, SECTORS, PAD, noiseAmp, noiseFreq)
+
     const points = []
-    for (let i = 0; i <= 64; i++) {
-      const angle = (i / 64) * Math.PI * 2
-      const x = area.centerX + Math.cos(angle) * area.radius
-      const z = area.centerZ + Math.sin(angle) * area.radius
-      const y = sampleTerrainMeshHeight(x, z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.18
-      
-      const mapped = mapToWorld(x, y, z, worldShape)
-      points.push(mapped.position[0], mapped.position[1], mapped.position[2])
+    for (let i = 0; i <= SECTORS; i++) {
+      const idx   = i % SECTORS
+      const angle = (idx / SECTORS) * Math.PI * 2
+      const r     = radii[idx]
+      const wx    = cx + Math.cos(angle) * r
+      const wz    = cz + Math.sin(angle) * r
+      const wy    = sampleTerrainMeshHeight(wx, wz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.20
+      const m     = mapToWorld(wx, wy, wz, worldShape)
+      points.push(...m.position)
     }
+
+    const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
     return geom
   }, [area, terrainSettings, globalSeed, worldShape])
 
+  useEffect(() => () => geometry.dispose(), [geometry])
+
+  useFrame((state, delta) => {
+    const isHov = hoveredAreaIdRef.current === area.habitId
+    glowT.current = THREE.MathUtils.damp(glowT.current, isHov ? 1 : 0, 5, delta)
+    const g = glowT.current
+
+    if (innerMatRef.current) {
+      innerMatRef.current.color.copy(baseColor).lerp(_WHITE, g * 0.5)
+      innerMatRef.current.opacity = 0.75 + g * 0.25
+    }
+
+    if (outerMatRef.current) {
+      const pulse = isHov
+        ? 0.5 + Math.sin(state.clock.elapsedTime * 3.2) * 0.3
+        : 0
+      outerMatRef.current.opacity = g * pulse
+    }
+  })
+
   return (
-    <line geometry={geometry}>
-      <lineBasicMaterial color={area.leafColor} />
-    </line>
+    <group>
+      {/* Primary border */}
+      <line geometry={geometry}>
+        <lineBasicMaterial ref={innerMatRef} color={area.leafColor} transparent opacity={0.75} />
+      </line>
+      {/* Glow halo — same geometry, slightly elevated */}
+      <line geometry={geometry}>
+        <lineBasicMaterial ref={outerMatRef} color="white" transparent opacity={0} depthWrite={false} />
+      </line>
+    </group>
   )
 }
 
 function HabitAreas({
   areas,
-  hoveredAreaId,
-  onHoverArea,
-  onLeaveArea,
-  visible,
+  hoveredAreaIdRef,
+  onAreaHover,
   onSelectArea,
+  visible,
   terrainSettings,
   globalSeed,
   worldShape,
@@ -942,21 +1091,25 @@ function HabitAreas({
             <group
               onPointerOver={(event) => {
                 event.stopPropagation()
-                onHoverArea(area)
+                hoveredAreaIdRef.current = area.habitId
+                onAreaHover?.(area)
+                document.body.style.cursor = 'pointer'
               }}
               onPointerOut={(event) => {
                 event.stopPropagation()
-                onLeaveArea()
+                hoveredAreaIdRef.current = null
+                onAreaHover?.(null)
+                document.body.style.cursor = 'default'
               }}
               onClick={(event) => {
                 event.stopPropagation()
                 onSelectArea(area)
               }}
             >
-              <HabitAreaShape area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} hoveredAreaId={hoveredAreaId} />
+              <HabitAreaShape area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} hoveredAreaIdRef={hoveredAreaIdRef} />
             </group>
-            
-            <HabitAreaBorder area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+
+            <HabitAreaBorder area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} hoveredAreaIdRef={hoveredAreaIdRef} />
             
 
           </group>
@@ -981,39 +1134,74 @@ function SceneContents({
   const cameraRef = useRef(null)
   const controlsRef = useRef(null)
   const isInteractingRef = useRef(false)
-  const [hoveredAreaId, setHoveredAreaId] = useState(null)
+  const hoveredAreaIdRef = useRef(null)
+  // Defer selection so terrain-heavy tree reconciliation doesn't block the click response
+  const deferredSelectedTreeId = useDeferredValue(selectedTreeId)
   const palette = interpolatePalette(timeOfDay)
   const areas = useMemo(
     () =>
       habits
         .filter((habit) => habit.trees.length > 0)
         .map((habit) => {
-          const trees = habit.trees
-          const centerX = trees.reduce((sum, tree) => sum + tree.x, 0) / trees.length
-          const centerZ = trees.reduce((sum, tree) => sum + tree.z, 0) / trees.length
-          const furthest = trees.reduce((maxRadius, tree) => {
-            const distance = Math.hypot(tree.x - centerX, tree.z - centerZ)
-            return Math.max(maxRadius, distance)
-          }, 0)
+          // Resolve each tree to its actual rendered position (water → dry land)
+          const resolvedTrees = habit.trees.map((tree) => {
+            let tx = tree.x
+            let tz = tree.z
+            const ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
+            if (ty < WATER_LEVEL + 0.3) {
+              const dry = findDryLand(tx, tz, terrainSettings, globalSeed)
+              tx = dry.x
+              tz = dry.z
+            }
+            return { x: tx, z: tz }
+          })
+
+          const centerX = resolvedTrees.reduce((s, t) => s + t.x, 0) / resolvedTrees.length
+          const centerZ = resolvedTrees.reduce((s, t) => s + t.z, 0) / resolvedTrees.length
+          const furthest = resolvedTrees.reduce((mx, t) =>
+            Math.max(mx, Math.hypot(t.x - centerX, t.z - centerZ)), 0)
+
           const uniqueDays = new Set(
-            trees.map((tree) => new Date(tree.plantedAt).toDateString()),
+            habit.trees.map((tree) => new Date(tree.plantedAt).toDateString()),
           )
 
           return {
             habitId: habit.id,
             habitName: habit.name,
             leafColor: habit.species.leafColor,
-            treeCount: trees.length,
+            treeCount: resolvedTrees.length,
             daysCompleted: uniqueDays.size,
             centerX,
             centerZ,
             radius: Math.max(4, furthest + 3.2),
+            trees: resolvedTrees,   // actual rendered positions for blob shape
           }
         }),
-    [habits],
+    [habits, terrainSettings, globalSeed],
   )
 
   const allTrees = useMemo(() => habits.flatMap(h => h.trees), [habits])
+
+  // Pre-compute every tree's world position once — keyed only on terrain/habits,
+  // NOT on selectedTreeId or viewMode, so clicking a tree never retriggers this.
+  const resolvedTrees = useMemo(() =>
+    habits.flatMap((habit) =>
+      habit.trees.map((tree) => {
+        let tx = tree.x
+        let tz = tree.z
+        let y = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
+        if (y < WATER_LEVEL + 0.3) {
+          const dryPos = findDryLand(tx, tz, terrainSettings, globalSeed)
+          tx = dryPos.x
+          tz = dryPos.z
+          y = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
+        }
+        const mapped = mapToWorld(tx, y, tz, worldShape)
+        return { habit, tree, tx, tz, mapped }
+      })
+    ),
+    [habits, terrainSettings, globalSeed, worldShape],
+  )
 
   return (
     <>
@@ -1092,15 +1280,8 @@ function SceneContents({
       <EdgeFence palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
       <HabitAreas
         areas={areas}
-        hoveredAreaId={hoveredAreaId}
-        onHoverArea={(area) => {
-          setHoveredAreaId(area.habitId)
-          onAreaHover?.(area)
-        }}
-        onLeaveArea={() => {
-          setHoveredAreaId(null)
-          onAreaHover?.(null)
-        }}
+        hoveredAreaIdRef={hoveredAreaIdRef}
+        onAreaHover={onAreaHover}
         visible={viewMode === 'areas'}
         terrainSettings={terrainSettings}
         globalSeed={globalSeed}
@@ -1116,20 +1297,8 @@ function SceneContents({
         }}
       />
 
-      {habits.flatMap((habit) =>
-        habit.trees.map((tree) => {
-          let tx = tree.x
-          let tz = tree.z
-          let y = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
-
-          if (y < WATER_LEVEL + 0.3) {
-            const dryPos = findDryLand(tx, tz, terrainSettings, globalSeed)
-            tx = dryPos.x
-            tz = dryPos.z
-            y = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET - TREE_GROUND_EMBED
-          }
-
-          const mapped = mapToWorld(tx, y, tz, worldShape)
+      {resolvedTrees.map(({ habit, tree, tx, tz, mapped }) => {
+          const inAreaView = viewMode === 'areas'
 
           return (
             <Tree
@@ -1138,8 +1307,9 @@ function SceneContents({
               tree={tree}
               mappedPosition={mapped.position}
               mappedQuaternion={mapped.quaternion}
-              isSelected={selectedTreeId === tree.id}
-              onSelect={() =>
+              isSelected={!inAreaView && deferredSelectedTreeId === tree.id}
+              interactive={!inAreaView}
+              onSelect={inAreaView ? undefined : () =>
                 onTreeSelect?.({
                   treeId: tree.id,
                   habitId: habit.id,
@@ -1161,8 +1331,8 @@ function SceneContents({
               }
             />
           )
-        }),
-      )}
+        })
+      }
 
       <OrbitControls
         ref={controlsRef}
