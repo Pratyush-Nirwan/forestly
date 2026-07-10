@@ -1260,60 +1260,6 @@ function GiantCrystal({ isPreview }) {
   )
 }
 
-function ItemWrapper({ fixedPos, isPreview, previewPosRef, placementRotationRef, keysDownRef, terrainSettings, globalSeed, worldShape, children }) {
-  const groupRef = useRef(null)
-
-  // Calculate static position once for placed items
-  const staticPos = useMemo(() => {
-    if (isPreview || !fixedPos) return { position: [0, -1000, 0], quaternion: new THREE.Quaternion() }
-    
-    let tx = fixedPos.x
-    let tz = fixedPos.z
-    let rot = fixedPos.rotation || 0
-    
-    let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-    const mapped = mapToWorld(tx, ty, tz, worldShape)
-    
-    // Apply item Y rotation
-    const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
-    mapped.quaternion.multiply(yRotQuat)
-    
-    return mapped
-  }, [fixedPos, isPreview, terrainSettings, globalSeed, worldShape])
-
-  useFrame((state, delta) => {
-    if (isPreview && groupRef.current && previewPosRef.current) {
-      if (keysDownRef?.current?.['e'] || keysDownRef?.current?.['r']) {
-        placementRotationRef.current += delta * 2.5
-      }
-      if (keysDownRef?.current?.['q']) {
-        placementRotationRef.current -= delta * 2.5
-      }
-
-      let tx = previewPosRef.current.x
-      let tz = previewPosRef.current.z
-      let rot = placementRotationRef?.current || 0
-      
-      let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-      const mapped = mapToWorld(tx, ty, tz, worldShape)
-      
-      // Apply placement Y rotation
-      const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
-      mapped.quaternion.multiply(yRotQuat)
-      
-      groupRef.current.position.set(mapped.position[0], mapped.position[1], mapped.position[2])
-      groupRef.current.quaternion.copy(mapped.quaternion)
-    }
-  })
-
-  return (
-    <group ref={groupRef} position={staticPos.position} quaternion={staticPos.quaternion}>
-      {children}
-    </group>
-  )
-}
-
-
 function MushroomPatch({ isPreview }) {
   const opacity = isPreview ? 0.6 : 1
   const stemMat = <meshStandardMaterial color="#eeeeee" roughness={0.9} transparent={isPreview} opacity={opacity} />
