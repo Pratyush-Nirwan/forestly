@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Html, OrbitControls, PerspectiveCamera, Sky, Sparkles } from '@react-three/drei'
 import * as THREE from 'three'
@@ -171,7 +171,7 @@ function SunDisc({ sunPosition, sunColor }) {
   )
 }
 
-function Ground({ palette, terrainSettings, globalSeed, worldShape }) {
+function Ground({ palette, terrainSettings, globalSeed, worldShape, onPointerMove, onClick }) {
   const terrainGeometry = useMemo(() => {
     const size = (WORLD_RADIUS + TERRAIN_PADDING) * 2
     const segments = TERRAIN_SEGMENTS
@@ -264,6 +264,8 @@ function Ground({ palette, terrainSettings, globalSeed, worldShape }) {
         receiveShadow
         position={[0, TERRAIN_Y_OFFSET, 0]}
         geometry={terrainGeometry}
+        onPointerMove={onPointerMove}
+        onClick={onClick}
       >
         <meshStandardMaterial vertexColors={true} roughness={1} transparent={true} alphaTest={0.05} />
       </mesh>
@@ -584,14 +586,15 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
         const rz = (pseudoRandom(f * 6000 + b * 19) - 0.5) * 0.7
         const ry = pseudoRandom(f * 7000 + b * 23) * Math.PI * 2
 
-        const mapped = mapToWorld(x, y + h * 0.1, z, worldShape)
+        // ConeGeometry height is centered at 0. Offset by h/2 so it sits on the ground.
+        const mapped = mapToWorld(x, y + h * 0.5, z, worldShape)
         dummy.position.set(...mapped.position)
         dummy.quaternion.copy(mapped.quaternion)
         
         const localQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz))
         dummy.quaternion.multiply(localQuat)
 
-        dummy.scale.set(0.04 + pseudoRandom(b * 2) * 0.02, h, 0.04 + pseudoRandom(b * 3) * 0.02)
+        dummy.scale.set(0.03 + pseudoRandom(b * 2) * 0.02, h, 0.03 + pseudoRandom(b * 3) * 0.02)
         dummy.updateMatrix()
 
         mats.push(dummy.matrix.clone())
@@ -601,11 +604,16 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
   }, [terrainSettings, globalSeed, worldShape])
 
   useEffect(() => {
-    if (meshRef.current) {
+    if (meshRef.current && matrices.length > 0) {
       matrices.forEach((matrix, i) => {
         meshRef.current.setMatrixAt(i, matrix)
       })
       meshRef.current.instanceMatrix.needsUpdate = true
+      
+      // CRITICAL: Compute bounding volumes so frustum culling works correctly
+      // when zooming in or looking away from the origin.
+      meshRef.current.computeBoundingSphere()
+      if (meshRef.current.computeBoundingBox) meshRef.current.computeBoundingBox()
     }
   }, [matrices])
 
@@ -617,7 +625,7 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
       receiveShadow
     >
       <coneGeometry args={[1, 1, 3]} />
-      <meshStandardMaterial color={palette.patch} flatShading roughness={0.8} />
+      <meshStandardMaterial color={palette.patch} flatShading roughness={0.8} side={THREE.DoubleSide} />
     </instancedMesh>
   )
 }
@@ -693,6 +701,849 @@ function EdgeFence({ palette, terrainSettings, globalSeed, worldShape }) {
         )
       })}
     </group>
+  )
+}
+function AnimatedCampfire({ isPreview, poleMat, fireMat }) {
+  const fireRef = useRef(null)
+  const lightRef = useRef(null)
+  const smokeRef = useRef(null)
+
+  // Pre-calculate smoke properties
+  const smokeParticles = useMemo(() => {
+    return Array.from({ length: 8 }, () => ({
+      x: (Math.random() - 0.5) * 0.2,
+      y: Math.random() * 0.8 + 0.2,
+      z: (Math.random() - 0.5) * 0.2,
+      speed: Math.random() * 0.008 + 0.005,
+      scale: Math.random() * 0.4 + 0.4,
+      phase: Math.random() * Math.PI * 2
+    }))
+  }, [])
+
+  useFrame((state) => {
+    if (isPreview) return
+    const t = state.clock.elapsedTime
+
+    // Flicker fire cone
+    if (fireRef.current) {
+      fireRef.current.scale.set(
+        1 + Math.sin(t * 15) * 0.1,
+        1 + Math.sin(t * 20) * 0.15,
+        1 + Math.sin(t * 12) * 0.1
+      )
+    }
+
+    // Flicker point light intensity
+    if (lightRef.current) {
+      lightRef.current.intensity = 2 + Math.sin(t * 18) * 0.3 + Math.sin(t * 7) * 0.2
+    }
+
+    // Animate smoke
+    if (smokeRef.current) {
+      smokeRef.current.children.forEach((child, i) => {
+        const p = smokeParticles[i]
+        child.position.y += p.speed
+        child.position.x += Math.sin(t * 2 + p.phase) * 0.003
+        
+        // fade by shrinking
+        const life = 1 - (child.position.y - 0.2) / 1.5
+        if (life > 0) {
+          child.scale.setScalar(p.scale * life)
+        } else {
+          // reset particle
+          child.position.y = 0.2
+          child.position.x = (Math.random() - 0.5) * 0.2
+          child.position.z = (Math.random() - 0.5) * 0.2
+          child.scale.setScalar(p.scale)
+        }
+      })
+    }
+  })
+
+  return (
+    <group position={[0, 0, 0]}>
+      {/* Rocks Base */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.05, 0]}>
+        <dodecahedronGeometry args={[0.3, 0]} />
+        {poleMat}
+      </mesh>
+      
+      {/* Fire */}
+      <mesh ref={fireRef} position={[0, 0.2, 0]}>
+        <coneGeometry args={[0.2, 0.4, 4]} />
+        {fireMat}
+      </mesh>
+
+      {/* Light */}
+      {!isPreview && (
+        <pointLight ref={lightRef} position={[0, 0.5, 0]} color="#ffaa00" intensity={2} distance={8} decay={2} />
+      )}
+
+      {/* Smoke */}
+      {!isPreview && (
+        <group ref={smokeRef}>
+          {smokeParticles.map((p, i) => (
+            <mesh key={i} position={[p.x, p.y, p.z]}>
+              <sphereGeometry args={[0.12, 4, 4]} />
+              <meshBasicMaterial color="#555" transparent opacity={0.2} depthWrite={false} />
+            </mesh>
+          ))}
+        </group>
+      )}
+    </group>
+  )
+}
+
+function Tent({ position, rotation, color, isPreview }) {
+  const transparent = isPreview
+  const opacity = isPreview ? 0.6 : 1
+  
+  const tentMat = <meshStandardMaterial color={color} roughness={0.9} flatShading transparent={transparent} opacity={opacity} />
+  const darkMat = <meshBasicMaterial color="#1f1f1f" transparent={transparent} opacity={opacity} />
+  const poleMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={transparent} opacity={opacity} />
+
+  const Pole = ({ rotZ, z }) => (
+    <group position={[0, 1.15, z]} rotation={[0, 0, rotZ]}>
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, -0.75, 0]}>
+        <cylinderGeometry args={[0.03, 0.03, 1.7, 5]} />
+        {poleMat}
+      </mesh>
+    </group>
+  )
+
+  return (
+    <group position={position} rotation={rotation}>
+      {/* Main Tent Body */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.4, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.8, 0.8, 1.8, 3]} />
+        {tentMat}
+      </mesh>
+
+      {/* Entrance Hole (Dark Triangle) */}
+      <mesh position={[0, 0.35, -0.91]} rotation={[-Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.6, 0.6, 0.02, 3]} />
+        {darkMat}
+      </mesh>
+
+      {/* Front Poles (-Z face) */}
+      <Pole rotZ={Math.PI / 6} z={-0.95} />
+      <Pole rotZ={-Math.PI / 6} z={-0.95} />
+
+      {/* Back Poles (+Z face) */}
+      <Pole rotZ={Math.PI / 6} z={0.95} />
+      <Pole rotZ={-Math.PI / 6} z={0.95} />
+
+      {/* Top Ridge Pole */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 1.2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.04, 0.04, 2.2, 5]} />
+        {poleMat}
+      </mesh>
+    </group>
+  )
+}
+
+function Campsite({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const transparent = isPreview
+
+  const fireMat = <meshBasicMaterial color="#ff9900" transparent={transparent} opacity={opacity} />
+  const poleMat = <meshStandardMaterial color="#444" roughness={0.9} flatShading transparent={transparent} opacity={opacity} />
+  
+  return (
+    <group>
+      <AnimatedCampfire isPreview={isPreview} poleMat={poleMat} fireMat={fireMat} />
+      <Tent position={[-1.5, 0, 1.5]} rotation={[0, -Math.PI / 4, 0]} color="#c2634e" isPreview={isPreview} />
+      <Tent position={[1.5, 0, 1.5]} rotation={[0, Math.PI / 4, 0]} color="#4e9cc2" isPreview={isPreview} />
+    </group>
+  )
+}
+
+function PicnicTable({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#6a4b35" roughness={0.9} flatShading transparent={isPreview} opacity={opacity} />
+  
+  return (
+    <group>
+      {/* Table Top */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.6, 0]}>
+        <boxGeometry args={[1.6, 0.1, 0.8]} />
+        {woodMat}
+      </mesh>
+      {/* Legs */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[-0.6, 0.3, 0]}>
+        <boxGeometry args={[0.1, 0.6, 1.4]} />
+        {woodMat}
+      </mesh>
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0.6, 0.3, 0]}>
+        <boxGeometry args={[0.1, 0.6, 1.4]} />
+        {woodMat}
+      </mesh>
+      {/* Bench 1 */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.35, 0.6]}>
+        <boxGeometry args={[1.6, 0.1, 0.3]} />
+        {woodMat}
+      </mesh>
+      {/* Bench 2 */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.35, -0.6]}>
+        <boxGeometry args={[1.6, 0.1, 0.3]} />
+        {woodMat}
+      </mesh>
+    </group>
+  )
+}
+
+function LanternPost({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const metalMat = <meshStandardMaterial color="#222" roughness={0.6} transparent={isPreview} opacity={opacity} />
+  const glassMat = <meshBasicMaterial color="#ffeeb0" transparent={isPreview} opacity={opacity} />
+
+  return (
+    <group>
+      {/* Main Pole */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.8, 0]}>
+        <cylinderGeometry args={[0.06, 0.08, 1.6, 5]} />
+        {woodMat}
+      </mesh>
+      {/* Arm */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0.3, 1.5, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.04, 0.04, 0.6, 4]} />
+        {woodMat}
+      </mesh>
+      {/* Lantern Cap */}
+      <mesh position={[0.5, 1.4, 0]}>
+        <coneGeometry args={[0.15, 0.15, 4]} />
+        {metalMat}
+      </mesh>
+      {/* Lantern Body */}
+      <mesh position={[0.5, 1.25, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.2, 4]} />
+        {glassMat}
+      </mesh>
+      {/* Lantern Base */}
+      <mesh position={[0.5, 1.13, 0]}>
+        <cylinderGeometry args={[0.12, 0.12, 0.04, 4]} />
+        {metalMat}
+      </mesh>
+      {!isPreview && (
+        <pointLight position={[0.5, 1.25, 0]} color="#ffeeb0" intensity={1.5} distance={12} decay={2} />
+      )}
+    </group>
+  )
+}
+
+function Birdhouse({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const poleMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const houseMat = <meshStandardMaterial color="#8e9968" roughness={0.8} transparent={isPreview} opacity={opacity} />
+  const roofMat = <meshStandardMaterial color="#c2634e" roughness={0.8} transparent={isPreview} opacity={opacity} />
+  const holeMat = <meshBasicMaterial color="#1f1f1f" transparent={isPreview} opacity={opacity} />
+
+  return (
+    <group>
+      {/* Pole */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 1.0, 0]}>
+        <cylinderGeometry args={[0.04, 0.06, 2.0, 5]} />
+        {poleMat}
+      </mesh>
+      {/* House Body */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 2.2, 0]}>
+        <boxGeometry args={[0.5, 0.5, 0.5]} />
+        {houseMat}
+      </mesh>
+      {/* Roof */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 2.55, 0]} rotation={[0, Math.PI / 4, 0]}>
+        <coneGeometry args={[0.5, 0.3, 4]} />
+        {roofMat}
+      </mesh>
+      {/* Hole */}
+      <mesh position={[0, 2.2, 0.26]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.02, 8]} />
+        {holeMat}
+      </mesh>
+      {/* Perch */}
+      <mesh castShadow={!isPreview} position={[0, 2.05, 0.3]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.02, 0.02, 0.15, 4]} />
+        {poleMat}
+      </mesh>
+    </group>
+  )
+}
+
+function Gazebo({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#5a422b" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const roofMat = <meshStandardMaterial color="#354a3c" roughness={0.8} transparent={isPreview} opacity={opacity} flatShading />
+  const floorMat = <meshStandardMaterial color="#4a3b2c" roughness={1.0} transparent={isPreview} opacity={opacity} />
+  const lightMat = <meshBasicMaterial color="#ffddaa" transparent={isPreview} opacity={opacity} />
+
+  const pillars = []
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2
+    const px = Math.cos(angle) * 1.8
+    const pz = Math.sin(angle) * 1.8
+    pillars.push(
+      <mesh key={i} castShadow={!isPreview} receiveShadow={!isPreview} position={[px, 1.5, pz]}>
+        <cylinderGeometry args={[0.08, 0.08, 3.0, 4]} />
+        {woodMat}
+      </mesh>
+    )
+  }
+
+  return (
+    <group>
+      {/* Base Floor */}
+      <mesh receiveShadow={!isPreview} position={[0, 0.1, 0]}>
+        <cylinderGeometry args={[2.2, 2.2, 0.2, 8]} />
+        {floorMat}
+      </mesh>
+      
+      {pillars}
+
+      {/* Roof Base */}
+      <mesh castShadow={!isPreview} position={[0, 3.1, 0]}>
+        <cylinderGeometry args={[2.4, 2.4, 0.2, 8]} />
+        {woodMat}
+      </mesh>
+
+      {/* Roof Dome */}
+      <mesh castShadow={!isPreview} position={[0, 4.1, 0]}>
+        <coneGeometry args={[2.4, 2.0, 8]} />
+        {roofMat}
+      </mesh>
+
+      {/* Center Lantern */}
+      <mesh position={[0, 2.8, 0]}>
+        <sphereGeometry args={[0.2, 8, 8]} />
+        {lightMat}
+      </mesh>
+      {!isPreview && (
+        <pointLight position={[0, 2.6, 0]} color="#ffddaa" intensity={2} distance={15} decay={2} />
+      )}
+    </group>
+  )
+}
+
+function Windmill({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const stoneMat = <meshStandardMaterial color="#888" roughness={0.9} transparent={isPreview} opacity={opacity} flatShading />
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const sailMat = <meshStandardMaterial color="#e0dfd5" roughness={1.0} transparent={isPreview} opacity={opacity} side={THREE.DoubleSide} />
+  
+  const sailsRef = useRef(null)
+
+  useFrame((state, delta) => {
+    if (!isPreview && sailsRef.current) {
+      sailsRef.current.rotation.z += delta * 0.5 // Slow continuous rotation
+    }
+  })
+
+  const sails = []
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2
+    sails.push(
+      <group key={i} rotation={[0, 0, angle]}>
+        {/* Sail arm */}
+        <mesh position={[0, 1.8, 0]}>
+          <boxGeometry args={[0.1, 3.6, 0.1]} />
+          {woodMat}
+        </mesh>
+        {/* Sail fabric */}
+        <mesh position={[0.4, 2.2, 0]} rotation={[0, 0.2, 0]}>
+          <planeGeometry args={[0.7, 2.8]} />
+          {sailMat}
+        </mesh>
+      </group>
+    )
+  }
+
+  return (
+    <group>
+      {/* Main Tower */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 2.5, 0]}>
+        <cylinderGeometry args={[1.2, 1.8, 5.0, 8]} />
+        {stoneMat}
+      </mesh>
+
+      {/* Tower Roof */}
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 5.8, 0]}>
+        <coneGeometry args={[1.4, 1.6, 8]} />
+        {woodMat}
+      </mesh>
+
+      {/* Door */}
+      <mesh position={[0, 0.8, 1.65]}>
+        <boxGeometry args={[0.8, 1.6, 0.2]} />
+        {woodMat}
+      </mesh>
+
+      {/* Rotating Sails Assembly */}
+      <group position={[0, 5.0, 1.3]}>
+        {/* Hub */}
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.3, 0.3, 0.6, 8]} />
+          {woodMat}
+        </mesh>
+        {/* The rotating part */}
+        <group ref={sailsRef} position={[0, 0, 0.3]}>
+          {sails}
+        </group>
+      </group>
+    </group>
+  )
+}
+
+function StonePath({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const stoneMat = <meshStandardMaterial color="#889988" roughness={1.0} transparent={isPreview} opacity={opacity} flatShading />
+  return (
+    <group>
+      <mesh receiveShadow={!isPreview} position={[0, 0.05, 0]} rotation={[0, Math.random(), 0]}>
+        <cylinderGeometry args={[0.5, 0.5, 0.05, 6]} />
+        {stoneMat}
+      </mesh>
+    </group>
+  )
+}
+
+function LogSeat({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={1.0} transparent={isPreview} opacity={opacity} />
+  return (
+    <group>
+      {/* Supports */}
+      <mesh castShadow={!isPreview} position={[-0.4, 0.1, 0]} rotation={[Math.PI/2, 0, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.4, 6]} />
+        {woodMat}
+      </mesh>
+      <mesh castShadow={!isPreview} position={[0.4, 0.1, 0]} rotation={[Math.PI/2, 0, 0]}>
+        <cylinderGeometry args={[0.1, 0.1, 0.4, 6]} />
+        {woodMat}
+      </mesh>
+      {/* Main Log */}
+      <mesh castShadow={!isPreview} position={[0, 0.25, 0]} rotation={[0, 0, Math.PI/2]}>
+        <cylinderGeometry args={[0.2, 0.2, 1.2, 8]} />
+        {woodMat}
+      </mesh>
+    </group>
+  )
+}
+
+function FlowerBed({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const soilMat = <meshStandardMaterial color="#2d1f14" roughness={1.0} transparent={isPreview} opacity={opacity} />
+  const pinkMat = <meshStandardMaterial color="#ff7eb3" roughness={0.6} transparent={isPreview} opacity={opacity} />
+  const yellowMat = <meshStandardMaterial color="#ffde59" roughness={0.6} transparent={isPreview} opacity={opacity} />
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[0, 0.1, 0]}>
+        <boxGeometry args={[1.4, 0.2, 0.6]} />
+        {woodMat}
+      </mesh>
+      <mesh position={[0, 0.21, 0]}>
+        <boxGeometry args={[1.2, 0.05, 0.4]} />
+        {soilMat}
+      </mesh>
+      <mesh position={[-0.4, 0.28, 0.1]}><sphereGeometry args={[0.1, 4, 4]} />{pinkMat}</mesh>
+      <mesh position={[0, 0.3, -0.05]}><sphereGeometry args={[0.12, 4, 4]} />{yellowMat}</mesh>
+      <mesh position={[0.3, 0.25, 0.05]}><sphereGeometry args={[0.08, 4, 4]} />{pinkMat}</mesh>
+      <mesh position={[0.5, 0.3, -0.1]}><sphereGeometry args={[0.1, 4, 4]} />{yellowMat}</mesh>
+      <mesh position={[-0.2, 0.25, -0.1]}><sphereGeometry args={[0.1, 4, 4]} />{pinkMat}</mesh>
+    </group>
+  )
+}
+
+function Well({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const stoneMat = <meshStandardMaterial color="#888" roughness={0.9} transparent={isPreview} opacity={opacity} flatShading />
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const roofMat = <meshStandardMaterial color="#354a3c" roughness={0.8} transparent={isPreview} opacity={opacity} />
+  const waterMat = <meshStandardMaterial color="#3b82f6" transparent={isPreview || true} opacity={isPreview ? 0.6 : 0.8} />
+
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[0, 0.4, 0]}>
+        <cylinderGeometry args={[0.6, 0.6, 0.8, 8]} />
+        {stoneMat}
+      </mesh>
+      <mesh position={[0, 0.6, 0]}>
+        <cylinderGeometry args={[0.5, 0.5, 0.1, 8]} />
+        {waterMat}
+      </mesh>
+      <mesh castShadow={!isPreview} position={[-0.5, 1.2, 0]}>
+        <boxGeometry args={[0.1, 1.6, 0.1]} />
+        {woodMat}
+      </mesh>
+      <mesh castShadow={!isPreview} position={[0.5, 1.2, 0]}>
+        <boxGeometry args={[0.1, 1.6, 0.1]} />
+        {woodMat}
+      </mesh>
+      <mesh castShadow={!isPreview} position={[0, 2.1, 0]} rotation={[0, Math.PI/4, 0]}>
+        <coneGeometry args={[0.9, 0.6, 4]} />
+        {roofMat}
+      </mesh>
+      <mesh position={[0, 1.4, 0]} rotation={[0, 0, Math.PI/2]}>
+        <cylinderGeometry args={[0.05, 0.05, 1.2, 6]} />
+        {woodMat}
+      </mesh>
+    </group>
+  )
+}
+
+function Watchtower({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const floorMat = <meshStandardMaterial color="#5a422b" roughness={1.0} transparent={isPreview} opacity={opacity} />
+  
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[-0.8, 2.5, -0.8]} rotation={[-0.05, 0, 0.05]}><cylinderGeometry args={[0.1, 0.15, 5, 4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0.8, 2.5, -0.8]} rotation={[-0.05, 0, -0.05]}><cylinderGeometry args={[0.1, 0.15, 5, 4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[-0.8, 2.5, 0.8]} rotation={[0.05, 0, 0.05]}><cylinderGeometry args={[0.1, 0.15, 5, 4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0.8, 2.5, 0.8]} rotation={[0.05, 0, -0.05]}><cylinderGeometry args={[0.1, 0.15, 5, 4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 4.8, 0]}><boxGeometry args={[2.4, 0.2, 2.4]} />{floorMat}</mesh>
+      <mesh position={[0, 5.2, -1.15]}><boxGeometry args={[2.4, 0.1, 0.1]} />{woodMat}</mesh>
+      <mesh position={[0, 5.2, 1.15]}><boxGeometry args={[2.4, 0.1, 0.1]} />{woodMat}</mesh>
+      <mesh position={[-1.15, 5.2, 0]}><boxGeometry args={[0.1, 0.1, 2.4]} />{woodMat}</mesh>
+      <mesh position={[1.15, 5.2, 0]}><boxGeometry args={[0.1, 0.1, 2.4]} />{woodMat}</mesh>
+      <mesh position={[-1.15, 5.0, -1.15]}><boxGeometry args={[0.1, 0.4, 0.1]} />{woodMat}</mesh>
+      <mesh position={[1.15, 5.0, -1.15]}><boxGeometry args={[0.1, 0.4, 0.1]} />{woodMat}</mesh>
+      <mesh position={[-1.15, 5.0, 1.15]}><boxGeometry args={[0.1, 0.4, 0.1]} />{woodMat}</mesh>
+      <mesh position={[1.15, 5.0, 1.15]}><boxGeometry args={[0.1, 0.4, 0.1]} />{woodMat}</mesh>
+      <mesh position={[0, 2.4, 1.1]} rotation={[-0.1, 0, 0]}><boxGeometry args={[0.6, 5.2, 0.05]} />{floorMat}</mesh>
+    </group>
+  )
+}
+
+function GiantCrystal({ isPreview }) {
+  const opacity = isPreview ? 0.4 : 0.85
+  const crystalGlowMat = <meshBasicMaterial color="#d48fff" transparent opacity={isPreview ? 0.2 : 0.4} />
+  
+  const crystalRef = useRef(null)
+  const lightRef = useRef(null)
+
+  useFrame((state) => {
+    if (!isPreview && crystalRef.current) {
+      const t = state.clock.elapsedTime
+      crystalRef.current.position.y = 2.0 + Math.sin(t) * 0.2
+      if (lightRef.current) {
+        lightRef.current.intensity = 2 + Math.sin(t * 2) * 0.5
+      }
+    }
+  })
+
+  return (
+    <group>
+      <group ref={crystalRef} position={[0, 2.0, 0]}>
+        <mesh castShadow={!isPreview}>
+          <octahedronGeometry args={[1.4, 0]} />
+          <meshStandardMaterial color="#c060ff" roughness={0.1} metalness={0.5} transparent opacity={opacity} flatShading />
+        </mesh>
+        <mesh scale={1.1}>
+          <octahedronGeometry args={[1.4, 0]} />
+          {crystalGlowMat}
+        </mesh>
+      </group>
+      <mesh position={[1.2, 0.8, 0.5]} rotation={[0.4, 0.5, 0.2]}>
+        <octahedronGeometry args={[0.5, 0]} />
+        <meshStandardMaterial color="#c060ff" roughness={0.1} metalness={0.5} transparent opacity={opacity} flatShading />
+      </mesh>
+      <mesh position={[-1.0, 0.5, -0.8]} rotation={[-0.4, -0.5, 0.6]}>
+        <octahedronGeometry args={[0.4, 0]} />
+        <meshStandardMaterial color="#c060ff" roughness={0.1} metalness={0.5} transparent opacity={opacity} flatShading />
+      </mesh>
+      {!isPreview && (
+        <pointLight ref={lightRef} position={[0, 2.0, 0]} color="#d48fff" intensity={2} distance={20} decay={2} />
+      )}
+    </group>
+  )
+}
+
+function ItemWrapper({ fixedPos, isPreview, previewPosRef, placementRotationRef, keysDownRef, terrainSettings, globalSeed, worldShape, children }) {
+  const groupRef = useRef(null)
+
+  // Calculate static position once for placed items
+  const staticPos = useMemo(() => {
+    if (isPreview || !fixedPos) return { position: [0, -1000, 0], quaternion: new THREE.Quaternion() }
+    
+    let tx = fixedPos.x
+    let tz = fixedPos.z
+    let rot = fixedPos.rotation || 0
+    
+    let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+    const mapped = mapToWorld(tx, ty, tz, worldShape)
+    
+    // Apply item Y rotation
+    const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
+    mapped.quaternion.multiply(yRotQuat)
+    
+    return mapped
+  }, [fixedPos, isPreview, terrainSettings, globalSeed, worldShape])
+
+  useFrame((state, delta) => {
+    if (isPreview && groupRef.current && previewPosRef.current) {
+      if (keysDownRef?.current?.['e'] || keysDownRef?.current?.['r']) {
+        placementRotationRef.current += delta * 2.5
+      }
+      if (keysDownRef?.current?.['q']) {
+        placementRotationRef.current -= delta * 2.5
+      }
+
+      let tx = previewPosRef.current.x
+      let tz = previewPosRef.current.z
+      let rot = placementRotationRef?.current || 0
+      
+      let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+      const mapped = mapToWorld(tx, ty, tz, worldShape)
+      
+      // Apply placement Y rotation
+      const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
+      mapped.quaternion.multiply(yRotQuat)
+      
+      groupRef.current.position.set(mapped.position[0], mapped.position[1], mapped.position[2])
+      groupRef.current.quaternion.copy(mapped.quaternion)
+    }
+  })
+
+  return (
+    <group ref={groupRef} position={staticPos.position} quaternion={staticPos.quaternion}>
+      {children}
+    </group>
+  )
+}
+
+
+function MushroomPatch({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const stemMat = <meshStandardMaterial color="#eeeeee" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const capMat = <meshStandardMaterial color="#ff3333" roughness={0.7} transparent={isPreview} opacity={opacity} />
+
+  const Shroom = ({ pos, scale }) => (
+    <group position={pos} scale={scale}>
+      <mesh position={[0, 0.2, 0]}><cylinderGeometry args={[0.04, 0.06, 0.4, 6]} />{stemMat}</mesh>
+      <mesh position={[0, 0.4, 0]}><sphereGeometry args={[0.15, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2]} />{capMat}</mesh>
+    </group>
+  )
+
+  return (
+    <group>
+      <Shroom pos={[0, 0, 0]} scale={1.2} />
+      <Shroom pos={[0.3, 0, 0.2]} scale={0.8} />
+      <Shroom pos={[-0.2, 0, 0.3]} scale={0.6} />
+      <Shroom pos={[-0.3, 0, -0.2]} scale={1.0} />
+    </group>
+  )
+}
+
+function WoodenFence({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[-0.9, 0.4, 0]}><cylinderGeometry args={[0.06, 0.06, 0.8, 4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0.9, 0.4, 0]}><cylinderGeometry args={[0.06, 0.06, 0.8, 4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 0.6, 0]}><boxGeometry args={[2.0, 0.1, 0.05]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 0.3, 0]}><boxGeometry args={[2.0, 0.1, 0.05]} />{woodMat}</mesh>
+    </group>
+  )
+}
+
+function Statue({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const stoneMat = <meshStandardMaterial color="#7a7a7a" roughness={0.9} flatShading transparent={isPreview} opacity={opacity} />
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[0, 0.3, 0]} rotation={[0, 0.2, 0]}><cylinderGeometry args={[0.5, 0.6, 0.6, 6]} />{stoneMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 0.9, 0]} rotation={[0, -0.4, 0]}><cylinderGeometry args={[0.4, 0.45, 0.6, 5]} />{stoneMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 1.4, 0]} rotation={[0.1, 0.5, 0]}><cylinderGeometry args={[0.25, 0.3, 0.5, 6]} />{stoneMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 1.8, 0]} rotation={[-0.1, 0.1, 0.1]}><sphereGeometry args={[0.2, 6, 6]} />{stoneMat}</mesh>
+    </group>
+  )
+}
+
+function Hammock({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  const fabricMat = <meshStandardMaterial color="#f0a868" roughness={1.0} transparent={isPreview} opacity={opacity} side={THREE.DoubleSide} />
+  const ropeMat = <meshStandardMaterial color="#dddddd" roughness={0.9} transparent={isPreview} opacity={opacity} />
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[-1.2, 0.8, 0]} rotation={[0, 0, -0.2]}><cylinderGeometry args={[0.06, 0.08, 1.6, 5]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[1.2, 0.8, 0]} rotation={[0, 0, 0.2]}><cylinderGeometry args={[0.06, 0.08, 1.6, 5]} />{woodMat}</mesh>
+      <mesh position={[0, 0.6, 0]} scale={[1.8, 0.4, 0.8]}><sphereGeometry args={[0.5, 16, 8, 0, Math.PI * 2, Math.PI/2, Math.PI/2]} />{fabricMat}</mesh>
+      <mesh position={[-1.05, 0.95, 0]} rotation={[0, 0, -1.2]}><cylinderGeometry args={[0.02, 0.02, 0.4]} />{ropeMat}</mesh>
+      <mesh position={[1.05, 0.95, 0]} rotation={[0, 0, 1.2]}><cylinderGeometry args={[0.02, 0.02, 0.4]} />{ropeMat}</mesh>
+    </group>
+  )
+}
+
+function Fountain({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const stoneMat = <meshStandardMaterial color="#b0b0b0" roughness={0.8} transparent={isPreview} opacity={opacity} />
+  const waterMat = <meshStandardMaterial color="#44aaff" roughness={0.1} transparent opacity={isPreview ? 0.5 : 0.7} />
+  return (
+    <group>
+      <mesh castShadow={!isPreview} receiveShadow={!isPreview} position={[0, 0.2, 0]}><cylinderGeometry args={[1.5, 1.6, 0.4, 12]} />{stoneMat}</mesh>
+      <mesh position={[0, 0.35, 0]}><cylinderGeometry args={[1.4, 1.4, 0.1, 12]} />{waterMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 0.8, 0]}><cylinderGeometry args={[0.3, 0.5, 0.8, 8]} />{stoneMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 1.2, 0]}><cylinderGeometry args={[0.8, 0.9, 0.2, 8]} />{stoneMat}</mesh>
+      <mesh position={[0, 1.25, 0]}><cylinderGeometry args={[0.75, 0.75, 0.1, 8]} />{waterMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 1.6, 0]}><cylinderGeometry args={[0.15, 0.25, 0.6, 8]} />{stoneMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 1.9, 0]}><cylinderGeometry args={[0.4, 0.45, 0.2, 8]} />{stoneMat}</mesh>
+      <mesh position={[0, 1.95, 0]}><cylinderGeometry args={[0.35, 0.35, 0.1, 8]} />{waterMat}</mesh>
+      <mesh position={[0, 2.2, 0]}><cylinderGeometry args={[0.05, 0.05, 0.6, 6]} />{waterMat}</mesh>
+    </group>
+  )
+}
+
+function ToriGate({ isPreview }) {
+  const opacity = isPreview ? 0.6 : 1
+  const woodMat = <meshStandardMaterial color="#d94838" roughness={0.8} transparent={isPreview} opacity={opacity} />
+  const blackMat = <meshStandardMaterial color="#222222" roughness={0.8} transparent={isPreview} opacity={opacity} />
+  return (
+    <group>
+      <mesh castShadow={!isPreview} position={[-1.6, 2.0, 0]} rotation={[0, 0, 0.05]}><cylinderGeometry args={[0.15, 0.2, 4.0, 8]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[1.6, 2.0, 0]} rotation={[0, 0, -0.05]}><cylinderGeometry args={[0.15, 0.2, 4.0, 8]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[-1.7, 0.2, 0]}><boxGeometry args={[0.6, 0.4, 0.6]} />{blackMat}</mesh>
+      <mesh castShadow={!isPreview} position={[1.7, 0.2, 0]}><boxGeometry args={[0.6, 0.4, 0.6]} />{blackMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 3.8, 0]}><boxGeometry args={[4.4, 0.3, 0.4]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 3.1, 0]}><boxGeometry args={[3.8, 0.2, 0.3]} />{woodMat}</mesh>
+      <mesh castShadow={!isPreview} position={[0, 3.45, 0]}><boxGeometry args={[0.2, 0.5, 0.35]} />{woodMat}</mesh>
+    </group>
+  )
+}
+
+function ItemWrapper({ fixedPos, isPreview, previewPosRef, placementRotationRef, keysDownRef, terrainSettings, globalSeed, worldShape, placementItem, onRemoveItem, children }) {
+  const groupRef = useRef(null)
+  const [hovered, setHovered] = useState(false)
+
+  // Calculate static position once for placed items
+  const staticPos = useMemo(() => {
+    if (isPreview || !fixedPos) return { position: [0, -1000, 0], quaternion: new THREE.Quaternion() }
+    
+    let tx = fixedPos.x
+    let tz = fixedPos.z
+    let rot = fixedPos.rotation || 0
+    
+    let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+    const mapped = mapToWorld(tx, ty, tz, worldShape)
+    
+    // Apply item Y rotation
+    const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
+    mapped.quaternion.multiply(yRotQuat)
+    
+    return mapped
+  }, [fixedPos, isPreview, terrainSettings, globalSeed, worldShape])
+
+  useFrame((state, delta) => {
+    if (isPreview && groupRef.current && previewPosRef.current) {
+      if (keysDownRef?.current?.['e'] || keysDownRef?.current?.['r']) {
+        placementRotationRef.current += delta * 2.5
+      }
+      if (keysDownRef?.current?.['q']) {
+        placementRotationRef.current -= delta * 2.5
+      }
+
+      let tx = previewPosRef.current.x
+      let tz = previewPosRef.current.z
+      let rot = placementRotationRef?.current || 0
+      
+      let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+      const mapped = mapToWorld(tx, ty, tz, worldShape)
+      
+      // Apply placement Y rotation
+      const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
+      mapped.quaternion.multiply(yRotQuat)
+      
+      groupRef.current.position.set(mapped.position[0], mapped.position[1], mapped.position[2])
+      groupRef.current.quaternion.copy(mapped.quaternion)
+    }
+  })
+
+  return (
+    <group 
+      ref={groupRef} 
+      position={staticPos.position} 
+      quaternion={staticPos.quaternion}
+      onPointerOver={(e) => {
+        if (!isPreview && !placementItem && onRemoveItem) {
+          e.stopPropagation()
+          setHovered(true)
+          document.body.style.cursor = 'pointer'
+        }
+      }}
+      onPointerOut={(e) => {
+        if (!isPreview) {
+          e.stopPropagation()
+          setHovered(false)
+          document.body.style.cursor = 'default'
+        }
+      }}
+      onClick={(e) => {
+        if (!isPreview && hovered && onRemoveItem) {
+          e.stopPropagation()
+          onRemoveItem(fixedPos)
+          setHovered(false)
+          document.body.style.cursor = 'default'
+        }
+      }}
+    >
+      {hovered && (
+        <Html position={[0, 2, 0]} center>
+          <div className="bg-red-500 text-white px-2 py-1 rounded text-xs font-bold whitespace-nowrap shadow-lg pointer-events-none">
+            ✕ Click to Remove
+          </div>
+        </Html>
+      )}
+      <group scale={hovered ? 1.05 : 1}>
+        {children}
+      </group>
+    </group>
+  )
+}
+
+function ShopItemRender({ item, terrainSettings, globalSeed, worldShape, isPreview, previewPosRef, placementRotationRef, keysDownRef, placementItem, onRemoveItem }) {
+  const props = { isPreview }
+  
+  let content = null
+  switch (item.type) {
+    case 'stone_path': content = <StonePath {...props} />; break;
+    case 'wooden_fence': content = <WoodenFence {...props} />; break;
+    case 'mushroom_patch': content = <MushroomPatch {...props} />; break;
+    case 'log_seat': content = <LogSeat {...props} />; break;
+    case 'flower_bed': content = <FlowerBed {...props} />; break;
+    case 'lantern_post': content = <LanternPost {...props} />; break;
+    case 'picnic_table': content = <PicnicTable {...props} />; break;
+    case 'statue': content = <Statue {...props} />; break;
+    case 'hammock': content = <Hammock {...props} />; break;
+    case 'birdhouse': content = <Birdhouse {...props} />; break;
+    case 'campsite': content = <Campsite {...props} />; break;
+    case 'well': content = <Well {...props} />; break;
+    case 'gazebo': content = <Gazebo {...props} />; break;
+    case 'fountain': content = <Fountain {...props} />; break;
+    case 'watchtower': content = <Watchtower {...props} />; break;
+    case 'tori_gate': content = <ToriGate {...props} />; break;
+    case 'windmill': content = <Windmill {...props} />; break;
+    case 'crystal': content = <GiantCrystal {...props} />; break;
+    default: return null
+  }
+
+  return (
+    <ItemWrapper 
+      fixedPos={item} 
+      isPreview={isPreview} 
+      previewPosRef={previewPosRef} 
+      placementRotationRef={placementRotationRef}
+      keysDownRef={keysDownRef}
+      placementItem={placementItem}
+      onRemoveItem={onRemoveItem}
+      terrainSettings={terrainSettings} 
+      globalSeed={globalSeed} 
+      worldShape={worldShape}
+    >
+      {content}
+    </ItemWrapper>
   )
 }
 
@@ -806,7 +1657,7 @@ function KeyboardCameraController({ controlsRef, cameraRef }) {
 
   useFrame((_, delta) => {
     if (!controlsRef.current || !cameraRef.current) return
-    // Don’t steal keys while user is typing
+    // Don't steal keys while user is typing
     const tag = document.activeElement?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
@@ -815,26 +1666,61 @@ function KeyboardCameraController({ controlsRef, cameraRef }) {
     const bck = k.has('KeyS') || k.has('ArrowDown')
     const lft = k.has('KeyA') || k.has('ArrowLeft')
     const rgt = k.has('KeyD') || k.has('ArrowRight')
-    if (!fwd && !bck && !lft && !rgt) return
+    const rotL = k.has('KeyQ')      // Rotate left/orbit counter-clockwise
+    const rotR = k.has('KeyE')      // Rotate right/orbit clockwise
+    const rotU = k.has('KeyI')      // Rotate up (pitch up)
+    const rotD = k.has('KeyK')      // Rotate down (pitch down)
+    
+    if (!fwd && !bck && !lft && !rgt && !rotL && !rotR && !rotU && !rotD) return
 
     const speed = 14 * delta
+    const rotSpeed = 1.2 * delta
     const cam   = cameraRef.current
     const ctrl  = controlsRef.current
 
-    // Forward = direction from camera toward target, flattened to XZ
-    _fwd.subVectors(ctrl.target, cam.position).setY(0).normalize()
-    _rgt.crossVectors(_fwd, _up).normalize()
+    // Handle orbit rotation
+    if (rotL || rotR || rotU || rotD) {
+      const spherical = new THREE.Spherical()
+      spherical.setFromVector3(cam.position.clone().sub(ctrl.target))
+      
+      if (rotL) {
+        spherical.theta -= rotSpeed
+      }
+      if (rotR) {
+        spherical.theta += rotSpeed
+      }
+      if (rotU) {
+        spherical.phi = Math.max(Math.PI / 10, Math.min(Math.PI * 0.455, spherical.phi - rotSpeed))
+      }
+      if (rotD) {
+        spherical.phi = Math.max(Math.PI / 10, Math.min(Math.PI * 0.455, spherical.phi + rotSpeed))
+      }
+      
+      const newPosition = new THREE.Vector3()
+      newPosition.setFromSpherical(spherical)
+      newPosition.add(ctrl.target)
+      
+      cam.position.copy(newPosition)
+      ctrl.update()
+    }
 
-    _move.set(0, 0, 0)
-    if (fwd) _move.addScaledVector(_fwd,  speed)
-    if (bck) _move.addScaledVector(_fwd, -speed)
-    if (lft) _move.addScaledVector(_rgt, -speed)
-    if (rgt) _move.addScaledVector(_rgt,  speed)
+    // Handle movement (WASD)
+    if (fwd || bck || lft || rgt) {
+      // Forward = direction from camera toward target, flattened to XZ
+      _fwd.subVectors(ctrl.target, cam.position).setY(0).normalize()
+      _rgt.crossVectors(_fwd, _up).normalize()
 
-    cam.position.add(_move)
-    ctrl.target.add(_move)
-    cam.position.y = Math.max(1.2, cam.position.y)
-    ctrl.update()
+      _move.set(0, 0, 0)
+      if (fwd) _move.addScaledVector(_fwd,  speed)
+      if (bck) _move.addScaledVector(_fwd, -speed)
+      if (lft) _move.addScaledVector(_rgt, -speed)
+      if (rgt) _move.addScaledVector(_rgt,  speed)
+
+      cam.position.add(_move)
+      ctrl.target.add(_move)
+      cam.position.y = Math.max(1.2, cam.position.y)
+      ctrl.update()
+    }
   })
 
   return null
@@ -1129,6 +2015,10 @@ function SceneContents({
   onAreaHover,
   terrainSettings,
   globalSeed,
+  inventory,
+  placementItem,
+  onPlaceItem,
+  onRemoveItem,
 }) {
   const worldShape = 'plane'   // globe mode removed
   const cameraRef = useRef(null)
@@ -1138,6 +2028,43 @@ function SceneContents({
   // Defer selection so terrain-heavy tree reconciliation doesn't block the click response
   const deferredSelectedTreeId = useDeferredValue(selectedTreeId)
   const palette = interpolatePalette(timeOfDay)
+  const previewPosRef = useRef(null)
+  const placementRotationRef = useRef(0)
+  const keysDownRef = useRef({})
+
+  useEffect(() => {
+    if (!placementItem) return
+
+    const handleKeyDown = (e) => {
+      keysDownRef.current[e.key.toLowerCase()] = true
+    }
+    const handleKeyUp = (e) => {
+      keysDownRef.current[e.key.toLowerCase()] = false
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [placementItem])
+
+  const handlePointerMove = useCallback((e) => {
+    if (placementItem) {
+      e.stopPropagation()
+      previewPosRef.current = { x: e.point.x, z: e.point.z }
+    }
+  }, [placementItem])
+
+  const handlePointerClick = useCallback((e) => {
+    if (placementItem && previewPosRef.current) {
+      e.stopPropagation()
+      onPlaceItem(placementItem, previewPosRef.current.x, previewPosRef.current.z, placementRotationRef.current)
+      previewPosRef.current = null
+      placementRotationRef.current = 0
+    }
+  }, [placementItem, onPlaceItem])
   const areas = useMemo(
     () =>
       habits
@@ -1213,6 +2140,8 @@ function SceneContents({
         makeDefault
         position={palette.cameraPosition}
         fov={58}
+        near={0.1}
+        far={1000}
       />
 
       <CameraRig
@@ -1273,11 +2202,28 @@ function SceneContents({
       <AmbientLife palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} allTrees={allTrees} habits={habits} worldShape={worldShape} />
       <Water worldShape={worldShape} />
       <WaterRipples worldShape={worldShape} />
-      <Ground palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <Ground palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} onPointerMove={handlePointerMove} onClick={handlePointerClick} />
       <WildGrass palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
       <Rocks  palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
       <Bushes palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
       <EdgeFence palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      
+      {inventory?.filter(i => typeof i === 'object').map((item) => (
+        <ShopItemRender 
+          key={item.id} 
+          item={item} 
+          terrainSettings={terrainSettings} 
+          globalSeed={globalSeed} 
+          worldShape={worldShape} 
+          placementItem={placementItem}
+          onRemoveItem={onRemoveItem}
+        />
+      ))}
+      
+      {placementItem && (
+        <ShopItemRender item={{ type: placementItem }} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} isPreview previewPosRef={previewPosRef} placementRotationRef={placementRotationRef} keysDownRef={keysDownRef} />
+      )}
+      
       <HabitAreas
         areas={areas}
         hoveredAreaIdRef={hoveredAreaIdRef}
@@ -1368,7 +2314,6 @@ function SceneContents({
     </>
   )
 }
-
 function ForestScene({
   habits,
   focusTarget,
@@ -1379,13 +2324,17 @@ function ForestScene({
   onAreaHover,
   terrainSettings,
   globalSeed,
+  inventory,
+  placementItem,
+  onPlaceItem,
+  onRemoveItem,
 }) {
   return (
     <Canvas
       shadows
       dpr={[1, 1.8]}
       gl={{ antialias: true }}
-      className="absolute inset-0"
+      className={`absolute inset-0 ${placementItem ? 'cursor-crosshair' : ''}`}
       onPointerMissed={() => {
         onTreeSelect?.(null)
       }}
@@ -1400,6 +2349,10 @@ function ForestScene({
         onAreaHover={onAreaHover}
         terrainSettings={terrainSettings}
         globalSeed={globalSeed}
+        inventory={inventory || []}
+        placementItem={placementItem}
+        onPlaceItem={onPlaceItem}
+        onRemoveItem={onRemoveItem}
       />
     </Canvas>
   )

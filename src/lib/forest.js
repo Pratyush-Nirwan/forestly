@@ -4,6 +4,8 @@ const STORAGE_KEY = 'habit-forest-v1'
 const SETTINGS_KEY = 'habit-forest-settings-v1'
 const TERRAIN_SETTINGS_KEY = 'habit-forest-terrain-v1'
 const GLOBAL_SEED_KEY = 'habit-forest-seed-v1'
+const POINTS_KEY = 'habit-forest-points-v1'
+const INVENTORY_KEY = 'habit-forest-inventory-v1'
 const STORAGE_VERSION = 1
 const TAU = Math.PI * 2
 const EDGE_PADDING = 4
@@ -606,6 +608,32 @@ export function saveGlobalSeed(seed) {
   window.localStorage.setItem(GLOBAL_SEED_KEY, seed)
 }
 
+export function loadPoints() {
+  if (typeof window === 'undefined') return 0
+  const raw = window.localStorage.getItem(POINTS_KEY)
+  return raw ? parseInt(raw, 10) || 0 : 0
+}
+
+export function savePoints(points) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(POINTS_KEY, points.toString())
+}
+
+export function loadInventory() {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(INVENTORY_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveInventory(inventory) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(INVENTORY_KEY, JSON.stringify(inventory))
+}
+
 export function createHabitRecord(name, currentHabits) {
   const trimmedName = name.trim()
   const id = createId()
@@ -638,8 +666,6 @@ export function completeHabitForToday(habitId, currentHabits) {
       return habit
     }
 
-    // First ever check-in: use createFirstTreePosition so the tree
-    // lands in a sensible open spot, not at (0, 0).
     const nextPosition =
       habit.trees.length === 0
         ? createFirstTreePosition(habit.id, allTrees,
@@ -660,7 +686,33 @@ export function completeHabitForToday(habitId, currentHabits) {
     }
   })
 
-  return { nextHabits, plantedTree }
+  return { nextHabits, plantedTree, pointsEarned: plantedTree ? 10 : 0 }
+}
+
+export function uncompleteHabitForToday(habitId, currentHabits) {
+  let pointsRemoved = 0
+  const nextHabits = currentHabits.map((habit) => {
+    if (habit.id !== habitId) return habit
+    const today = getTodayStamp()
+    if (habit.lastCompletedOn !== today) return habit
+
+    const lastTree = habit.trees.at(-1)
+    if (lastTree && getTodayStamp(new Date(lastTree.plantedAt)) === today) {
+      pointsRemoved = 10
+      return {
+        ...habit,
+        trees: habit.trees.slice(0, -1),
+        lastCompletedOn: habit.trees.length > 1 
+          ? getTodayStamp(new Date(habit.trees[habit.trees.length - 2].plantedAt))
+          : null,
+        lastPosition: habit.trees.length > 1
+          ? { x: habit.trees[habit.trees.length - 2].x, z: habit.trees[habit.trees.length - 2].z }
+          : null
+      }
+    }
+    return habit
+  })
+  return { nextHabits, pointsRemoved }
 }
 
 export function getForestTotals(habits) {
@@ -801,3 +853,4 @@ export function isHabitWithered(habit) {
 export function deleteHabit(habitId, currentHabits) {
   return currentHabits.filter(h => h.id !== habitId)
 }
+

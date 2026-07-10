@@ -1,179 +1,110 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-const ONBOARDING_SEEN_KEY = 'forestly_onboarding_seen'
-const USER_NAME_KEY = 'forestly_user_name'
+export const ONBOARDING_KEY = 'forestly_onboarding_v1'
+export const USER_NAME_KEY  = 'forestly_user_name'
 
-export function loadUserName() {
-  if (typeof window === 'undefined') return ''
-  try {
-    return window.localStorage.getItem(USER_NAME_KEY) || ''
-  } catch {
-    return ''
-  }
-}
-
-export function saveUserName(name) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(USER_NAME_KEY, name.trim())
-  } catch { /* ignore */ }
-}
-
-export function isOnboardingComplete() {
-  if (typeof window === 'undefined') return true
-  try {
-    return window.localStorage.getItem(ONBOARDING_SEEN_KEY) === '1'
-  } catch {
-    return true
-  }
-}
-
-export function markOnboardingComplete() {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(ONBOARDING_SEEN_KEY, '1')
-  } catch { /* ignore */ }
-}
-
-const SUGGESTED_HABITS = [
-  'Drink 8 glasses of water',
-  'Read for 20 minutes',
-  'Morning stretch',
-  'Take a walk',
-  'Write in journal',
-  'Meditate for 10 minutes',
+// ── Recommended habits ──────────────────────────────────────────────────────
+const RECOMMENDED = [
+  // Health
+  { id: 'r-morning-jog',   emoji: '🏃', label: 'Morning Jog',      category: 'Health' },
+  { id: 'r-drink-water',   emoji: '💧', label: 'Drink Water',       category: 'Health' },
+  { id: 'r-sleep-8h',      emoji: '😴', label: 'Sleep 8 Hours',     category: 'Health' },
+  { id: 'r-stretch',       emoji: '🧘', label: 'Stretch / Yoga',    category: 'Health' },
+  { id: 'r-no-junk',       emoji: '🥗', label: 'Eat Clean',         category: 'Health' },
+  // Mind
+  { id: 'r-meditate',      emoji: '🧠', label: 'Meditate',          category: 'Mind'   },
+  { id: 'r-journal',       emoji: '📓', label: 'Write Journal',     category: 'Mind'   },
+  { id: 'r-gratitude',     emoji: '🙏', label: 'Gratitude List',    category: 'Mind'   },
+  // Learning
+  { id: 'r-read',          emoji: '📚', label: 'Read 20 Pages',     category: 'Learn'  },
+  { id: 'r-language',      emoji: '🗣️', label: 'Learn a Language',  category: 'Learn'  },
+  { id: 'r-code',          emoji: '💻', label: 'Code Daily',        category: 'Learn'  },
+  // Lifestyle
+  { id: 'r-no-phone',      emoji: '📵', label: 'No Phone Morning',  category: 'Life'   },
+  { id: 'r-cold-shower',   emoji: '🚿', label: 'Cold Shower',       category: 'Life'   },
+  { id: 'r-tidy',          emoji: '🏠', label: 'Tidy Space',        category: 'Life'   },
 ]
 
-// Easing functions
-const easeOutBack = (x) => {
-  const c1 = 1.70158
-  const c3 = c1 + 1
-  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2)
-}
+// ── Loading stages ──────────────────────────────────────────────────────────
+const LOADING_STAGES = [
+  { label: 'Generating your terrain…',   duration: 900  },
+  { label: 'Planting your first trees…', duration: 1000 },
+  { label: 'Waking the forest…',         duration: 800  },
+  { label: 'Your forest is ready 🌲',    duration: 600  },
+]
 
-const easeInOutCubic = (x) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2
-
-// ── Step transition wrapper ───────────────────────────────────────────────────
-function StepWrapper({ children, isEntering, isExiting, direction = 1 }) {
-  const [progress, setProgress] = useState(isEntering ? 0 : 1)
-
+// ── Animated 3-dot ellipsis ─────────────────────────────────────────────────
+function AnimatedDots() {
+  const [frame, setFrame] = useState(0)
   useEffect(() => {
-    if (isEntering) {
-      const start = performance.now()
-      let raf
-      const animate = (now) => {
-        const elapsed = now - start
-        const p = Math.min(1, elapsed / 400)
-        setProgress(easeInOutCubic(p))
-        if (p < 1) raf = requestAnimationFrame(animate)
-      }
-      raf = requestAnimationFrame(animate)
-      return () => cancelAnimationFrame(raf)
-    }
-    if (isExiting) {
-      const start = performance.now()
-      let raf
-      const animate = (now) => {
-        const elapsed = now - start
-        const p = Math.min(1, elapsed / 300)
-        setProgress(1 - easeInOutCubic(p))
-        if (p < 1) raf = requestAnimationFrame(animate)
-      }
-      raf = requestAnimationFrame(animate)
-      return () => cancelAnimationFrame(raf)
-    }
-  }, [isEntering, isExiting])
-
-  const opacity = progress
-  const translateX = (1 - progress) * 30 * direction
-
+    const id = setInterval(() => setFrame(f => (f + 1) % 4), 380)
+    return () => clearInterval(id)
+  }, [])
   return (
-    <div
-      className="w-full"
-      style={{
-        opacity,
-        transform: `translateX(${translateX}px)`,
-        transition: 'none',
-      }}
-    >
-      {children}
-    </div>
+    <span className="inline-flex gap-[5px] items-center ml-1">
+      {[0, 1, 2].map(i => (
+        <span
+          key={i}
+          style={{
+            width: 7, height: 7,
+            borderRadius: '50%',
+            background: '#a8d878',
+            opacity: frame > i ? 1 : 0.2,
+            transition: 'opacity 0.25s ease',
+            display: 'inline-block',
+          }}
+        />
+      ))}
+    </span>
   )
 }
 
-// ── Animated entrance hook for elements ───────────────────────────────────────
-function useAnimatedEntrance(delay = 0) {
-  const [progress, setProgress] = useState(0)
-  useEffect(() => {
-    const start = performance.now() + delay
-    let raf
-    const animate = (now) => {
-      const elapsed = now - start
-      if (elapsed < 0) {
-        raf = requestAnimationFrame(animate)
-        return
-      }
-      const p = Math.min(1, elapsed / 500)
-      setProgress(easeOutBack(p))
-      if (p < 1) raf = requestAnimationFrame(animate)
-    }
-    raf = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(raf)
-  }, [delay])
-  return progress
-}
-
-// ── Step 1: Name ──────────────────────────────────────────────────────────────
-function StepName({ name, setName, onNext }) {
+// ── Step 1: Name ────────────────────────────────────────────────────────────
+function NameStep({ onNext }) {
+  const [name, setName] = useState('')
   const inputRef = useRef(null)
-  const iconProg = useAnimatedEntrance(0)
-  const titleProg = useAnimatedEntrance(100)
-  const descProg = useAnimatedEntrance(200)
-  const inputProg = useAnimatedEntrance(300)
-  const btnProg = useAnimatedEntrance(400)
 
-  useEffect(() => { inputRef.current?.focus() }, [])
+  useEffect(() => {
+    setTimeout(() => inputRef.current?.focus(), 120)
+  }, [])
 
-  const canProceed = name.trim().length > 0
+  function handleSubmit(e) {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed) return
+    onNext(trimmed)
+  }
 
   return (
-    <div className="flex flex-col items-center text-center">
-      <div 
-        className="mb-6 text-5xl transition-transform"
-        style={{ 
-          opacity: iconProg,
-          transform: `scale(${0.5 + iconProg * 0.5}) translateY(${(1 - iconProg) * 20}px)`
-        }}
-      >
-        🌲
+    <div className="flex flex-col items-center justify-center min-h-full px-6 py-12 text-center">
+      {/* Floating trees illustration */}
+      <div className="mb-8 relative">
+        <div className="text-7xl select-none" style={{ filter: 'drop-shadow(0 8px 32px rgba(80,160,80,0.35))' }}>
+          🌲
+        </div>
+        <div
+          className="absolute -top-2 -right-6 text-4xl select-none"
+          style={{ filter: 'drop-shadow(0 4px 16px rgba(80,160,80,0.25))', opacity: 0.7 }}
+        >
+          🌿
+        </div>
+        <div
+          className="absolute -bottom-1 -left-7 text-3xl select-none"
+          style={{ filter: 'drop-shadow(0 4px 16px rgba(80,160,80,0.25))', opacity: 0.55 }}
+        >
+          🌱
+        </div>
       </div>
-      <h2 
-        className="mb-2 text-xl font-bold tracking-tight text-white"
-        style={{ 
-          opacity: titleProg,
-          transform: `translateY(${(1 - titleProg) * 15}px)`
-        }}
-      >
+
+      <h1 className="text-2xl font-bold text-white tracking-tight mb-2">
         Welcome to Forestly
-      </h2>
-      <p 
-        className="mb-8 max-w-xs text-sm leading-relaxed text-[#d4e4cc]/60"
-        style={{ 
-          opacity: descProg,
-          transform: `translateY(${(1 - descProg) * 15}px)`
-        }}
-      >
-        Grow a beautiful forest by building habits. Every check-in plants a tree.
+      </h1>
+      <p className="text-[13px] text-[#d4e4cc]/65 mb-10 max-w-xs leading-relaxed">
+        Your habits grow into a living, breathing 3D forest. Every day you check in, a new tree is planted.
       </p>
 
-      <div 
-        className="w-full max-w-xs"
-        style={{ 
-          opacity: inputProg,
-          transform: `translateY(${(1 - inputProg) * 15}px)`
-        }}
-      >
-        <label className="mb-2 block text-left text-[10px] font-semibold uppercase tracking-widest text-[#d4e4cc]/55">
+      <form onSubmit={handleSubmit} className="w-full max-w-xs flex flex-col gap-3">
+        <label className="text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a8d878]/80 mb-0.5">
           What should we call you?
         </label>
         <input
@@ -181,477 +112,372 @@ function StepName({ name, setName, onNext }) {
           type="text"
           value={name}
           onChange={e => setName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && canProceed) onNext() }}
-          placeholder="Your name"
-          className="forest-input w-full rounded-2xl border border-white/15 bg-black/15 px-4 py-3 text-sm text-white placeholder:text-[#d8e7d2]/45"
+          placeholder="Your name…"
+          maxLength={32}
+          className="forest-input w-full rounded-2xl border border-white/15 bg-black/20 px-5 py-3.5 text-base text-white placeholder:text-[#d8e7d2]/35 text-center"
         />
-      </div>
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="w-full rounded-2xl bg-[#b8d890] py-3.5 text-sm font-bold text-[#1e3018] transition hover:bg-[#cdeaa8] active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed mt-1"
+        >
+          Let's grow →
+        </button>
+      </form>
 
-      <button
-        type="button"
-        onClick={onNext}
-        disabled={!canProceed}
-        className="mt-6 w-full max-w-xs rounded-2xl bg-[#b8d890] py-3 text-sm font-bold text-[#1e3018] transition hover:bg-[#cdeaa8] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
-        style={{ 
-          opacity: btnProg,
-          transform: `translateY(${(1 - btnProg) * 15}px) scale(${0.95 + btnProg * 0.05})`
-        }}
-      >
-        Continue
-      </button>
+      <p className="mt-8 text-[10px] text-[#d4e4cc]/30">
+        Your data stays entirely on your device.
+      </p>
     </div>
   )
 }
 
-// ── Step 2: Habits ────────────────────────────────────────────────────────────
-function StepHabits({ habits, setHabits, onNext, onBack }) {
-  const [draft, setDraft] = useState('')
-  const [removingIndex, setRemovingIndex] = useState(null)
+// ── Step 2: Habit picker ────────────────────────────────────────────────────
+const CATEGORIES = ['Health', 'Mind', 'Learn', 'Life']
+const CAT_LABELS  = { Health: '💪 Health', Mind: '🧘 Mind', Learn: '📖 Learn', Life: '🌅 Lifestyle' }
+
+function HabitsStep({ userName, onNext }) {
+  const [selected, setSelected] = useState(new Set())
+  const [custom, setCustom]     = useState('')
   const inputRef = useRef(null)
-  const iconProg = useAnimatedEntrance(0)
-  const titleProg = useAnimatedEntrance(100)
-  const descProg = useAnimatedEntrance(200)
-  const inputProg = useAnimatedEntrance(300)
 
-  const addHabit = useCallback((habitName) => {
-    const trimmed = habitName.trim()
-    if (!trimmed || habits.includes(trimmed)) return
-    setHabits(prev => [...prev, trimmed])
-  }, [habits, setHabits])
+  function toggle(id) {
+    setSelected(s => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
-  const removeHabit = useCallback((index) => {
-    setRemovingIndex(index)
-    setTimeout(() => {
-      setHabits(prev => prev.filter((_, i) => i !== index))
-      setRemovingIndex(null)
-    }, 250)
-  }, [setHabits])
+  function addCustom() {
+    const t = custom.trim()
+    if (!t) return
+    setSelected(s => new Set([...s, `custom:${t}`]))
+    setCustom('')
+    inputRef.current?.focus()
+  }
 
-  const isSuggestedSelected = (s) => habits.includes(s)
-
-  const canProceed = habits.length > 0
+  function getHabitNames() {
+    return [...selected].map(id => {
+      if (id.startsWith('custom:')) return id.slice(7)
+      return RECOMMENDED.find(r => r.id === id)?.label ?? id
+    })
+  }
 
   return (
-    <div className="flex flex-col items-center text-center">
-      <div 
-        className="mb-4 text-4xl"
-        style={{ 
-          opacity: iconProg,
-          transform: `scale(${0.5 + iconProg * 0.5})`
-        }}
-      >
-        🌱
+    <div className="flex flex-col h-full px-5 py-5 text-[#eef8ea]">
+      {/* Header */}
+      <div className="shrink-0 mb-4 text-center">
+        <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-[#a8d878]/70 mb-1">
+          Step 2 of 2
+        </p>
+        <h2 className="text-xl font-bold text-white leading-tight">
+          What will you track, {userName}?
+        </h2>
+        <p className="mt-1 text-[11px] text-[#d4e4cc]/55">
+          Add your own or pick from the suggestions below.
+        </p>
       </div>
-      <h2 
-        className="mb-2 text-xl font-bold tracking-tight text-white"
-        style={{ 
-          opacity: titleProg,
-          transform: `translateY(${(1 - titleProg) * 15}px)`
-        }}
-      >
-        What habits will you grow?
-      </h2>
-      <p 
-        className="mb-6 max-w-xs text-sm leading-relaxed text-[#d4e4cc]/60"
-        style={{ 
-          opacity: descProg,
-          transform: `translateY(${(1 - descProg) * 15}px)`
-        }}
-      >
-        Add a few habits you want to build. You can always add more later.
+
+      {/* Custom habit input — always visible at top */}
+      <div className="shrink-0 mb-4">
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={custom}
+            onChange={e => setCustom(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addCustom()}
+            placeholder="Type your own habit…"
+            maxLength={48}
+            className="forest-input min-w-0 flex-1 rounded-2xl border border-white/15 bg-black/15 px-4 py-2.5 text-sm text-white placeholder:text-[#d8e7d2]/35"
+          />
+          <button
+            type="button"
+            onClick={addCustom}
+            disabled={!custom.trim()}
+            className="rounded-2xl bg-white/12 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/20 disabled:opacity-40"
+          >
+            Add
+          </button>
+        </div>
+        {/* Custom habit tags */}
+        {[...selected].some(id => id.startsWith('custom:')) && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {[...selected].filter(id => id.startsWith('custom:')).map(id => {
+              const label = id.slice(7)
+              return (
+                <span
+                  key={id}
+                  className="flex items-center gap-1 rounded-full border border-[#a8d878]/40 bg-[#1a3320]/60 px-2.5 py-1 text-[11px] font-medium text-[#c8eaac]"
+                >
+                  {label}
+                  <button
+                    type="button"
+                    onClick={() => toggle(id)}
+                    className="ml-0.5 text-[#a8d878]/60 hover:text-red-400 transition"
+                  >
+                    ×
+                  </button>
+                </span>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Divider */}
+      <p className="shrink-0 mb-3 text-[10px] font-bold uppercase tracking-[0.24em] text-[#d4e4cc]/40">
+        — Or pick from suggestions —
       </p>
 
-      {/* Add input */}
-      <div 
-        className="flex w-full max-w-xs gap-2"
-        style={{ 
-          opacity: inputProg,
-          transform: `translateY(${(1 - inputProg) * 15}px)`
-        }}
-      >
-        <input
-          ref={inputRef}
-          type="text"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && draft.trim()) { addHabit(draft); setDraft('') } }}
-          placeholder="e.g. Read 20 pages"
-          className="forest-input min-w-0 flex-1 rounded-2xl border border-white/15 bg-black/15 px-4 py-2.5 text-sm text-white placeholder:text-[#d8e7d2]/45"
-        />
-        <button
-          type="button"
-          onClick={() => { if (draft.trim()) { addHabit(draft); setDraft('') } }}
-          disabled={!draft.trim()}
-          className="rounded-2xl bg-[#b8d890] px-4 py-2.5 text-sm font-semibold text-[#1e3018] transition hover:bg-[#cdeaa8] disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          Add
-        </button>
-      </div>
-
-      {/* Suggested chips - always visible, highlight selected */}
-      <div className="mt-4 flex w-full max-w-xs flex-wrap justify-center gap-1.5">
-        {SUGGESTED_HABITS.map((s, i) => {
-          const isSelected = isSuggestedSelected(s)
+      {/* Recommended grid — scrollable */}
+      <div className="flex-1 overflow-y-auto pr-0.5 -mr-1 min-h-0">
+        {CATEGORIES.map(cat => {
+          const habits = RECOMMENDED.filter(r => r.category === cat)
           return (
-            <button
-              key={s}
-              type="button"
-              onClick={() => isSelected ? removeHabit(habits.indexOf(s)) : addHabit(s)}
-              className={`
-                relative overflow-hidden rounded-full border px-3 py-1 text-[10px] transition-all duration-200
-                ${isSelected 
-                  ? 'border-[#a8d878]/60 bg-[#a8d878]/20 text-[#a8d878] pr-6' 
-                  : 'border-white/10 bg-white/5 text-[#dce9d6]/70 hover:border-[#a8d878]/40 hover:text-[#a8d878]'
-                }
-              `}
-              style={{
-                animationDelay: `${i * 50}ms`,
-              }}
-            >
-              <span>{s}</span>
-              {isSelected && (
-                <span className="absolute right-1.5 top-1/2 -translate-y-1/2 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#a8d878]/30 text-[8px] text-[#a8d878] transition hover:bg-red-500/40 hover:text-red-400">
-                  ×
-                </span>
-              )}
-            </button>
+            <div key={cat} className="mb-4">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.24em] text-[#d4e4cc]/45">
+                {CAT_LABELS[cat]}
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {habits.map(h => {
+                  const active = selected.has(h.id)
+                  return (
+                    <button
+                      key={h.id}
+                      type="button"
+                      onClick={() => toggle(h.id)}
+                      className={[
+                        'flex items-center justify-between rounded-xl border px-3 py-2 text-left text-[12px] font-medium transition-all duration-150 active:scale-[0.97]',
+                        active
+                          ? 'border-[#a8d878]/50 bg-[#1a3320]/60 text-[#c8eaac]'
+                          : 'border-white/10 bg-black/12 text-[#dce9d6]/75 hover:border-white/20 hover:bg-black/18',
+                      ].join(' ')}
+                    >
+                      <span className="truncate">{h.label}</span>
+                      {active && <span className="ml-2 shrink-0 text-[10px] text-[#a8d878]">✓</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           )
         })}
+        {/* Bottom breathing room */}
+        <div className="h-2" />
       </div>
 
-      {/* Added habits list - custom habits only */}
-      {habits.length > 0 && (
-        <div className="mt-4 flex w-full max-w-xs flex-col gap-2">
-          {habits.filter(h => !SUGGESTED_HABITS.includes(h)).map((h, i) => {
-            const actualIndex = habits.indexOf(h)
-            const isRemoving = removingIndex === actualIndex
-            return (
-              <div
-                key={`${h}-${i}`}
-                className={`
-                  flex items-center justify-between rounded-xl border border-white/10 bg-black/12 px-3 py-2.5 text-left
-                  transition-all duration-250
-                `}
-                style={{
-                  opacity: isRemoving ? 0 : 1,
-                  transform: isRemoving ? 'translateX(20px)' : 'translateX(0)',
-                }}
-              >
-                <span className="truncate text-sm text-white">{h}</span>
-                <button
-                  type="button"
-                  onClick={() => removeHabit(actualIndex)}
-                  className="ml-2 shrink-0 rounded-full p-1 text-[#d4e4cc]/30 transition hover:bg-red-500/20 hover:text-red-400"
-                >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                    <path d="M9.5 2.5l-7 7M2.5 2.5l7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      <div className="mt-6 flex w-full max-w-xs gap-3">
+      {/* CTA */}
+      <div className="shrink-0 mt-3 pt-3 border-t border-white/8">
+        {selected.size > 0 && (
+          <p className="mb-2 text-center text-[11px] text-[#d4e4cc]/55">
+            {selected.size} habit{selected.size > 1 ? 's' : ''} selected — each one gets its own grove 🌳
+          </p>
+        )}
         <button
           type="button"
-          onClick={onBack}
-          className="flex-1 rounded-2xl border border-white/15 py-3 text-sm font-semibold text-white transition hover:bg-white/5"
+          disabled={selected.size === 0}
+          onClick={() => onNext(getHabitNames())}
+          className="w-full rounded-2xl bg-[#b8d890] py-3.5 text-sm font-bold text-[#1e3018] transition hover:bg-[#cdeaa8] active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Back
-        </button>
-        <button
-          type="button"
-          onClick={onNext}
-          disabled={!canProceed}
-          className="flex-1 rounded-2xl bg-[#b8d890] py-3 text-sm font-bold text-[#1e3018] transition hover:bg-[#cdeaa8] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          Grow my forest
+          {selected.size === 0 ? 'Select at least one habit' : 'Plant my forest →'}
         </button>
       </div>
     </div>
   )
 }
 
-// ── Step 3: Loading (no progress bar) ──────────────────────────────────────────
-function StepLoading({ userName, habits }) {
-  const [currentMessage, setCurrentMessage] = useState(0)
+// ── Step 3: Loading ─────────────────────────────────────────────────────────
+function LoadingStep({ onDone }) {
+  const [stageIndex, setStageIndex] = useState(0)
+  const [visible, setVisible]       = useState(true)
+  const [exiting, setExiting]       = useState(false)
 
   useEffect(() => {
-    const messages = [
-      { text: 'Preparing the soil...', duration: 800 },
-      { text: `Planting seeds for ${habits.length} habits...`, duration: 900 },
-      { text: 'Watering your first trees...', duration: 700 },
-      { text: 'Letting the sun in...', duration: 800 },
-      { text: 'Almost there...', duration: 600 },
-      { text: 'Ready to grow!', duration: 400 },
-    ]
-
-    let cancelled = false
-    let timeouts = []
     let elapsed = 0
+    const timers = []
 
-    messages.forEach((msg, i) => {
-      const timeout = setTimeout(() => {
-        if (!cancelled) setCurrentMessage(i)
+    LOADING_STAGES.forEach((stage, i) => {
+      const t = setTimeout(() => {
+        setStageIndex(i)
       }, elapsed)
-      timeouts.push(timeout)
-      elapsed += msg.duration
+      timers.push(t)
+      elapsed += stage.duration
     })
 
-    return () => {
-      cancelled = true
-      timeouts.forEach(t => clearTimeout(t))
-    }
-  }, [habits.length])
+    // After all stages, fade out and call onDone
+    const doneTimer = setTimeout(() => {
+      setExiting(true)
+      setTimeout(() => {
+        setVisible(false)
+        onDone()
+      }, 600)
+    }, elapsed + 200)
 
-  const messages = [
-    'Preparing the soil...',
-    `Planting seeds for ${habits.length} habits...`,
-    'Watering your first trees...',
-    'Letting the sun in...',
-    'Almost there...',
-    'Ready to grow!',
-  ]
+    timers.push(doneTimer)
+    return () => timers.forEach(clearTimeout)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  const iconProg = useAnimatedEntrance(0)
+  const stage = LOADING_STAGES[stageIndex]
+  const isFinal = stageIndex === LOADING_STAGES.length - 1
+
+  if (!visible) return null
 
   return (
-    <div className="flex flex-col items-center text-center">
-      <div 
-        className="mb-8 text-6xl"
-        style={{ 
-          opacity: iconProg,
-          transform: `scale(${0.5 + iconProg * 0.5})`
-        }}
-      >
-        🌿
-      </div>
-      <h2 className="mb-4 text-2xl font-bold tracking-tight text-white">
-        Welcome, {userName}
-      </h2>
-      <p className="h-6 text-sm text-[#d4e4cc]/70 transition-all duration-300">
-        {messages[currentMessage]}
-      </p>
-      {/* Animated dots */}
-      <div className="mt-6 flex gap-1">
-        {[0, 1, 2].map((i) => (
+    <div
+      className="flex flex-col items-center justify-center min-h-full px-6 text-center"
+      style={{
+        opacity: exiting ? 0 : 1,
+        transition: 'opacity 0.6s ease',
+      }}
+    >
+      {/* Animated forest icons */}
+      <div className="mb-8 flex items-end justify-center gap-3 select-none">
+        {['🌱', '🌿', '🌲', '🌳', '🌲'].map((icon, i) => (
           <span
             key={i}
-            className="h-2 w-2 rounded-full bg-[#a8d878]"
+            className="text-4xl"
             style={{
-              animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
-              opacity: 0.6 + (currentMessage / 5) * 0.4,
+              opacity: stageIndex >= i - 1 ? 1 : 0.15,
+              transform: `scale(${stageIndex >= i ? 1 : 0.65})`,
+              transition: `opacity 0.5s ease ${i * 0.07}s, transform 0.5s cubic-bezier(0.34,1.56,0.64,1) ${i * 0.07}s`,
+              filter: 'drop-shadow(0 4px 12px rgba(80,160,80,0.3))',
+            }}
+          >
+            {icon}
+          </span>
+        ))}
+      </div>
+
+      {/* Stage label */}
+      <p
+        key={stageIndex}
+        className={`text-[15px] font-semibold mb-4 transition-all duration-300 ${isFinal ? 'text-[#a8d878]' : 'text-white'}`}
+        style={{ animation: 'fadeSlideIn 0.35s ease' }}
+      >
+        {stage.label}
+      </p>
+
+      {/* Dot indicators */}
+      <div className="flex items-center gap-2.5">
+        {LOADING_STAGES.map((_, i) => (
+          <div
+            key={i}
+            style={{
+              width: stageIndex === i ? 20 : 8,
+              height: 8,
+              borderRadius: 999,
+              background: i <= stageIndex ? '#a8d878' : 'rgba(255,255,255,0.15)',
+              transition: 'all 0.4s cubic-bezier(0.34,1.56,0.64,1)',
             }}
           />
         ))}
       </div>
-      <style>{`
-        @keyframes bounce {
-          0%, 80%, 100% { transform: scale(1); opacity: 0.4; }
-          40% { transform: scale(1.3); opacity: 1; }
-        }
-      `}</style>
     </div>
   )
 }
 
-// ── Live Tooltip Tutorial ───────────────────────────────────────────────────
-// Overlays tooltips on actual UI elements of the app
-function LiveTooltipTutorial({ onFinish }) {
-  const [step, setStep] = useState(0)
-  const [isTouch] = useState(() =>
-    typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
-  )
 
-  const tooltips = [
-    {
-      id: 'habits',
-      title: '📝 Track Habits',
-      desc: 'Check off your habits here daily. Each completion plants a tree!',
-      position: { left: '24rem', top: '8rem' }, // Positioned near habit panel
-      arrow: 'left',
-    },
-    {
-      id: 'stats',
-      title: '📅 Your Progress',
-      desc: 'See the date and how many trees you\'ve grown.',
-      position: { left: '50%', top: '6rem', transform: 'translateX(-50%)' },
-      arrow: 'top',
-    },
-    {
-      id: 'explore',
-      title: '👀 Explore',
-      desc: isTouch 
-        ? 'Swipe to pan, pinch to zoom. Tap any tree to see its details.'
-        : 'Click and drag to look around. Use WASD to move, scroll to zoom.',
-      position: { right: '3rem', top: '40%', width: '16rem' },
-      arrow: 'right',
-    },
-    {
-      id: 'streaks',
-      title: '🔥 Build Streaks',
-      desc: 'Keep your streak alive! Missing 2 days will cause your trees to wither.',
-      position: { left: '24rem', top: '50%' },
-      arrow: 'left',
-    },
-    {
-      id: 'customize',
-      title: '🌅 Customize',
-      desc: 'Switch to Settings tab to change time of day, terrain, and forest seed.',
-      position: { left: '24rem', top: '70%' },
-      arrow: 'left',
-    },
-  ]
 
-  const current = tooltips[step]
-  const isLastStep = step === tooltips.length - 1
+// ── Root OnboardingFlow ─────────────────────────────────────────────────────
+// step: 'name' → 'habits' → 'loading' → null (done)
+export default function OnboardingFlow({ onComplete }) {
+  const [step, setStep] = useState('name')
+  const [userName, setUserName] = useState('')
+  const [habitNames, setHabitNames] = useState([])
+  const [mounted, setMounted] = useState(false)
 
-  const Arrow = ({ direction }) => {
-    const styles = {
-      left: 'absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rotate-45 bg-[#1a2e1f] border-r border-b border-[#a8d878]/40',
-      right: 'absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rotate-45 bg-[#1a2e1f] border-l border-t border-[#a8d878]/40',
-      top: 'absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 rotate-45 bg-[#1a2e1f] border-r border-b border-[#a8d878]/40',
-      bottom: 'absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 rotate-45 bg-[#1a2e1f] border-l border-t border-[#a8d878]/40',
-    }
-    return <div className={styles[direction]} />
+  // Fade-in on mount
+  useEffect(() => {
+    requestAnimationFrame(() => setMounted(true))
+  }, [])
+
+  function handleNameNext(name) {
+    setUserName(name)
+    setStep('habits')
+  }
+
+  function handleHabitsNext(names) {
+    setHabitNames(names)
+    setStep('loading')
+  }
+
+  function handleLoadingDone() {
+    // Persist name + mark onboarding complete
+    localStorage.setItem(USER_NAME_KEY, userName)
+    localStorage.setItem(ONBOARDING_KEY, JSON.stringify({ completedAt: Date.now() }))
+    onComplete({ userName, habitNames })
   }
 
   return (
     <>
-      {/* Dimmed overlay - allows seeing the actual UI */}
-      <div className="pointer-events-none fixed inset-0 z-[90] bg-black/50 transition-opacity duration-500" />
+      {/* Keyframe animations injected once */}
+      <style>{`
+        @keyframes dotBounce {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.75; }
+          40%            { transform: translateY(-9px); opacity: 1; }
+        }
+        @keyframes fadeSlideIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0);   }
+        }
+      `}</style>
 
-      {/* Tooltip */}
+      {/* Full-screen overlay */}
       <div
-        className="fixed z-[101] transition-all duration-500 ease-out"
+        className="fixed inset-0 z-[200] flex items-stretch overflow-hidden"
         style={{
-          ...current.position,
+          background: 'linear-gradient(155deg, rgba(10,24,16,0.96) 0%, rgba(15,34,22,0.98) 100%)',
+          backdropFilter: 'blur(28px)',
+          opacity: mounted ? 1 : 0,
+          transition: 'opacity 0.55s ease',
         }}
       >
-        <div className="forest-panel relative max-w-[16rem] rounded-2xl border border-[#a8d878]/30 bg-[#1a2e1f]/95 p-4 shadow-2xl backdrop-blur-sm">
-          <Arrow direction={current.arrow} />
-          <h3 className="mb-1 text-sm font-bold text-white">{current.title}</h3>
-          <p className="text-[11px] leading-relaxed text-[#d4e4cc]/90">{current.desc}</p>
+        {/* Subtle background decoration */}
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background: `
+              radial-gradient(ellipse 60% 50% at 20% 10%, rgba(100,180,80,0.07), transparent),
+              radial-gradient(ellipse 55% 45% at 80% 90%, rgba(60,140,80,0.06), transparent)
+            `,
+          }}
+        />
 
-          <div className="mt-3 flex items-center justify-between">
-            <div className="flex gap-1">
-              {tooltips.map((_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => setStep(i)}
-                  className={`h-1.5 rounded-full transition-all ${i === step ? 'w-4 bg-[#a8d878]' : 'w-1.5 bg-white/20'}`}
+        {/* Card container */}
+        <div className="relative z-10 m-auto w-full max-w-sm overflow-hidden rounded-[32px] forest-panel flex flex-col"
+          style={{ height: 'min(92vh, 660px)', minHeight: 420 }}
+        >
+          {/* Step indicator dots (top) */}
+          {step !== 'loading' && (
+            <div className="flex justify-center gap-1.5 pt-5 shrink-0">
+              {['name', 'habits'].map((s, i) => (
+                <div
+                  key={s}
+                  style={{
+                    width: step === s ? 20 : 8,
+                    height: 8,
+                    borderRadius: 999,
+                    background: ['name', 'habits'].indexOf(step) >= i
+                      ? '#a8d878'
+                      : 'rgba(255,255,255,0.15)',
+                    transition: 'all 0.35s ease',
+                  }}
                 />
               ))}
             </div>
-            <div className="flex gap-2">
-              {step > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setStep(s => s - 1)}
-                  className="rounded-lg border border-white/15 px-3 py-1 text-[10px] text-white transition hover:bg-white/5"
-                >
-                  Back
-                </button>
-              )}
-              {!isLastStep ? (
-                <button
-                  type="button"
-                  onClick={() => setStep(s => s + 1)}
-                  className="rounded-lg bg-[#b8d890] px-3 py-1 text-[10px] font-semibold text-[#1e3018] transition hover:bg-[#cdeaa8]"
-                >
-                  Next
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onFinish}
-                  className="rounded-lg bg-[#b8d890] px-3 py-1 text-[10px] font-semibold text-[#1e3018] transition hover:bg-[#cdeaa8]"
-                >
-                  Start Growing! 🌱
-                </button>
-              )}
-            </div>
+          )}
+
+          {/* Step content */}
+          <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+            {step === 'name'    && <NameStep   onNext={handleNameNext} />}
+            {step === 'habits'  && <HabitsStep userName={userName} onNext={handleHabitsNext} />}
+            {step === 'loading' && <LoadingStep onDone={handleLoadingDone} />}
           </div>
         </div>
       </div>
     </>
-  )
-}
-
-// ── Main onboarding component ─────────────────────────────────────────────────
-export default function OnboardingFlow({ onComplete }) {
-  const [step, setStep] = useState(0)
-  const [name, setName] = useState('')
-  const [habits, setHabits] = useState([])
-  const [isLoadingComplete, setIsLoadingComplete] = useState(false)
-
-  const handleNext = useCallback(() => {
-    if (step === 0) {
-      saveUserName(name)
-    }
-    if (step === 1) {
-      // Start loading - wait for natural loading animation (~3.5s)
-      setStep(2)
-      setTimeout(() => {
-        setIsLoadingComplete(true)
-        setStep(3)
-      }, 3500)
-      return
-    }
-    if (step === 3) {
-      markOnboardingComplete()
-      onComplete(habits)
-      return
-    }
-    setStep(s => s + 1)
-  }, [step, name, habits, onComplete])
-
-  const handleBack = useCallback(() => {
-    setStep(s => s - 1)
-  }, [])
-
-  const handleFinish = useCallback(() => {
-    markOnboardingComplete()
-    onComplete(habits)
-  }, [habits, onComplete])
-
-  // For steps 0-2: show modal with solid background
-  // For step 3: show live tooltips over the actual app
-  const showModal = step <= 2
-
-  if (!showModal) {
-    // Live tooltip tutorial overlays the actual app
-    return <LiveTooltipTutorial onFinish={handleFinish} />
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
-      style={{ background: '#0d1f14' }}
-    >
-      <div className="forest-panel relative w-full max-w-md overflow-hidden rounded-[28px] p-6 text-[#edf6ea] md:p-8">
-        {/* Step content with transitions */}
-        <div className="relative">
-          {step === 0 && (
-            <StepWrapper isEntering={step === 0} direction={1}>
-              <StepName name={name} setName={setName} onNext={handleNext} />
-            </StepWrapper>
-          )}
-          {step === 1 && (
-            <StepWrapper isEntering={step === 1} direction={step > 0 ? 1 : -1}>
-              <StepHabits habits={habits} setHabits={setHabits} onNext={handleNext} onBack={handleBack} />
-            </StepWrapper>
-          )}
-          {step === 2 && (
-            <StepWrapper isEntering={step === 2} direction={1}>
-              <StepLoading userName={name} habits={habits} />
-            </StepWrapper>
-          )}
-        </div>
-      </div>
-    </div>
   )
 }

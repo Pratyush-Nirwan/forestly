@@ -260,13 +260,19 @@ function CalendarDots({ habit }) {
 }
 
 // ── Single habit card ─────────────────────────────────────────────────────────
-function HabitCard({ habit, completedToday, isPending, onComplete, onDelete }) {
+function HabitCard({ habit, completedToday, isPending, onComplete, onUncomplete, onDelete }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const streak = useMemo(() => getHabitStreak(habit), [habit])
+  const streak  = useMemo(() => getHabitStreak(habit),   [habit])
   const longest = useMemo(() => getLongestStreak(habit), [habit])
   const milestone = useMemo(() => getMilestone(habit.trees.length), [habit])
-  const withered = useMemo(() => isHabitWithered(habit), [habit])
+  const withered  = useMemo(() => isHabitWithered(habit), [habit])
+
+  function handleCheckboxClick() {
+    if (isPending) return
+    if (completedToday) onUncomplete(habit.id)
+    else                onComplete(habit.id)
+  }
 
   return (
     <div
@@ -279,13 +285,16 @@ function HabitCard({ habit, completedToday, isPending, onComplete, onDelete }) {
     >
       {/* Row 1: checkbox + name + badges + delete */}
       <div className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          checked={completedToday}
-          disabled={completedToday || isPending}
-          onChange={() => onComplete(habit.id)}
-          className="mt-[3px] h-4 w-4 shrink-0 cursor-pointer accent-[#a8d878]"
-        />
+        <div className="relative mt-[3px] shrink-0">
+          <input
+            type="checkbox"
+            checked={completedToday}
+            disabled={isPending}
+            onChange={handleCheckboxClick}
+            className="h-4 w-4 cursor-pointer accent-[#a8d878]"
+            title={completedToday ? 'Click to undo today\'s check-in' : 'Mark as done'}
+          />
+        </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <p className={`truncate text-sm font-semibold ${completedToday ? 'text-[#c8eaac]' : 'text-white'}`}>
@@ -347,7 +356,7 @@ function HabitCard({ habit, completedToday, isPending, onComplete, onDelete }) {
             <div className="flex-1">
               <CalendarDots habit={habit} />
               <p className="mt-1.5 text-[10px] text-[#dce9d6]/60">
-                {completedToday ? '✓ Tree planted for today' : 'Check off to plant a tree today'}
+                {completedToday ? '✓ Tree planted today' : 'Check off to plant a tree today'}
               </p>
             </div>
             <TreePreview species={habit.species} />
@@ -496,6 +505,8 @@ function ControlsTab() {
         { keys: ['S', '↓'], label: 'Move backward' },
         { keys: ['A', '←'], label: 'Move left' },
         { keys: ['D', '→'], label: 'Move right' },
+        { keys: ['Q', 'E'], label: 'Orbit horizontally' },
+        { keys: ['I', 'K'], label: 'Orbit vertically' },
       ],
     },
     {
@@ -559,6 +570,7 @@ function HabitPanel({
   viewMode,
   onAddHabit,
   onCompleteHabit,
+  onUncompleteHabit,
   onSetTimeOfDay,
   onSetViewMode,
   onDeleteHabit,
@@ -647,6 +659,7 @@ function HabitPanel({
       </button>
 
       <aside
+        data-tutorial="habit-panel"
         className={[
           'forest-panel pointer-events-auto fixed flex flex-col overflow-hidden text-[#edf6ea]',
           // Desktop: left sidebar, slides off left when collapsed
@@ -694,7 +707,7 @@ function HabitPanel({
         </div>
 
         {/* ── Add habit form ── */}
-        <form className="mt-4 flex gap-2 shrink-0" onSubmit={handleSubmit}>
+        <form className="mt-4 flex gap-2 shrink-0" onSubmit={handleSubmit} data-tutorial="habit-add-form">
           <input
             type="text"
             value={draftHabit}
@@ -723,6 +736,7 @@ function HabitPanel({
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
+              data-tutorial={tab.id === 'stats' ? 'tab-stats' : tab.id === 'settings' ? 'tab-settings' : tab.id === 'controls' ? 'tab-controls' : undefined}
               className={`flex-1 rounded-full py-1.5 text-xs font-medium transition ${activeTab === tab.id
                 ? 'bg-white/18 text-white'
                 : 'text-[#d8e7d2]/65 hover:text-white'
@@ -741,7 +755,7 @@ function HabitPanel({
             <>
               {/* View toggles (Trees / Areas) */}
               <div className="mb-3 flex justify-end shrink-0">
-                <div className="flex rounded-full border border-white/10 bg-black/10 p-0.5">
+                <div className="flex rounded-full border border-white/10 bg-black/10 p-0.5" data-tutorial="view-toggle">
                   <button
                     type="button"
                     onClick={() => onSetViewMode('forest')}
@@ -756,7 +770,7 @@ function HabitPanel({
               </div>
 
               {/* Habit list */}
-              <div className="flex flex-col gap-2.5 overflow-y-auto pr-0.5">
+              <div className="flex flex-col gap-2.5 overflow-y-auto pr-0.5" data-tutorial="habit-list">
                 {habits.length === 0 ? (
                   <div className="rounded-[20px] border border-dashed border-white/15 bg-black/8 px-5 py-8 text-center text-sm text-[#e3efde]/55">
                     Your clearing is quiet.<br />Add your first habit above.
@@ -770,6 +784,7 @@ function HabitPanel({
                       isPending={isPending}
                       todayStamp={todayStamp}
                       onComplete={onCompleteHabit}
+                      onUncomplete={onUncompleteHabit}
                       onDelete={onDeleteHabit}
                     />
                   ))
