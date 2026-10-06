@@ -734,7 +734,7 @@ function HabitPanel({
         type="button"
         aria-label={mobileOpen ? 'Close habit panel' : 'Open habit panel'}
         onClick={() => setMobileOpen(o => !o)}
-        className="forest-panel pointer-events-auto fixed bottom-5 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-full border border-white/20 text-[#edf6ea] shadow-lg transition active:scale-95 md:hidden"
+        className="forest-panel pointer-events-auto fixed bottom-5 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-full border border-white/20 text-[#edf6ea] shadow-lg transition active:scale-95 md:hidden mb-[env(safe-area-inset-bottom,0px)] mr-[env(safe-area-inset-right,0px)]"
         style={{ backdropFilter: 'blur(24px)' }}
       >
         {mobileOpen ? (
@@ -780,7 +780,7 @@ function HabitPanel({
           'md:left-0 md:top-0 md:bottom-0 md:h-screen md:w-[22rem] md:rounded-r-[28px] md:rounded-l-none md:p-6',
           desktopOpen ? 'md:translate-x-0' : 'md:-translate-x-full',
           // Mobile: bottom sheet
-          'left-0 right-0 bottom-0 h-[82vh] w-full rounded-t-[28px] rounded-b-none p-4',
+          'left-0 right-0 bottom-0 h-[82dvh] w-full rounded-t-[28px] rounded-b-none p-4 pb-[max(1.25rem,calc(env(safe-area-inset-bottom)+0.75rem))]',
           'transition-transform duration-300 ease-out z-40',
           mobileOpen ? 'translate-y-0' : 'translate-y-full md:translate-y-0',
         ].join(' ')}
