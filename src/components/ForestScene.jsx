@@ -303,6 +303,9 @@ function Water({ palette }) {
       <shaderMaterial
         transparent
         depthWrite={false}
+        polygonOffset
+        polygonOffsetFactor={-2}
+        polygonOffsetUnits={-2}
         uniforms={uniforms}
         vertexShader={`
           varying vec3 vWorldPosition;
