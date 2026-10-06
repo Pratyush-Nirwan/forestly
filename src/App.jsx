@@ -354,52 +354,8 @@ function App() {
 
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_60%,rgba(17,31,22,0.35)_100%)]" />
 
-      {/* ── Top-right action buttons (Audio chime toggle + Shop) ── */}
+      {/* ── Top-right action buttons (Shop only — sound moved to Settings) ── */}
       <div className="pointer-events-auto absolute top-3 right-3 sm:top-4 sm:right-4 z-20 flex items-center gap-2">
-        <button
-          onClick={() => {
-            const nextMuted = !isMuted
-            setIsMuted(nextMuted)
-            setAudioMuted(nextMuted)
-            if (!nextMuted) {
-              playPlantTreeChime()
-            }
-          }}
-          className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/20 bg-black/25 backdrop-blur-md shadow-lg transition-all duration-200 hover:border-white/35 hover:bg-black/40 hover:scale-105 active:scale-95"
-          title={isMuted ? 'Unmute sounds' : 'Mute sounds'}
-          aria-label={isMuted ? 'Unmute sounds' : 'Mute sounds'}
-        >
-          {isMuted ? (
-            <svg
-              className="w-5 h-5 text-white/50 transition-colors group-hover:text-white/80"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              <line x1="23" y1="9" x2="17" y2="15" />
-              <line x1="17" y1="9" x2="23" y2="15" />
-            </svg>
-          ) : (
-            <svg
-              className="w-5 h-5 text-[#a8d878] transition-transform duration-200 group-hover:scale-110 drop-shadow-[0_2px_4px_rgba(0,0,0,0.35)]"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-              <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-            </svg>
-          )}
-        </button>
-
         <button
           onClick={() => setIsShopOpen(true)}
           data-tutorial="shop-btn"
@@ -515,6 +471,13 @@ function App() {
           onSetTerrainSettings={setTerrainSettings}
           onResetProgress={handleResetProgress}
           onOpenLegal={setLegalModalType}
+          isMuted={isMuted}
+          onToggleMute={() => {
+            const nextMuted = !isMuted
+            setIsMuted(nextMuted)
+            setAudioMuted(nextMuted)
+            if (!nextMuted) playPlantTreeChime()
+          }}
         />
 
         {/* ── Bottom info panel ── */}

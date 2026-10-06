@@ -704,6 +704,8 @@ function HabitPanel({
   onSetTerrainSettings,
   onResetProgress,
   onOpenLegal,
+  isMuted,
+  onToggleMute,
 }) {
   const [draftHabit, setDraftHabit] = useState('')
   const [isAddingHabit, setIsAddingHabit] = useState(false)
@@ -952,6 +954,30 @@ function HabitPanel({
           {/* SETTINGS TAB */}
           {activeTab === 'settings' && (
             <div className="flex flex-col gap-5 overflow-y-auto pr-1">
+              {/* Sound toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-[#d4e4cc]/60">Sound Effects</p>
+                  <p className="mt-0.5 text-[10px] text-[#d4e4cc]/40">Chimes when a habit is completed</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={onToggleMute}
+                  className={`relative flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors duration-200 ${
+                    !isMuted
+                      ? 'border-[#a8d878]/50 bg-[#a8d878]/30'
+                      : 'border-white/15 bg-black/20'
+                  }`}
+                  aria-label={isMuted ? 'Unmute sounds' : 'Mute sounds'}
+                >
+                  <span
+                    className={`absolute h-4 w-4 rounded-full shadow transition-all duration-200 ${
+                      !isMuted ? 'left-[calc(100%-1.25rem)] bg-[#a8d878]' : 'left-1 bg-white/40'
+                    }`}
+                  />
+                </button>
+              </div>
+
               {/* Forest seed */}
               <div>
                 <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#d4e4cc]/60">Forest Seed</p>
