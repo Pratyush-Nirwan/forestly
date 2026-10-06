@@ -355,7 +355,10 @@ function App() {
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_60%,rgba(17,31,22,0.35)_100%)]" />
 
       {/* ── Top-right action buttons (Shop only — sound moved to Settings) ── */}
-      <div className="pointer-events-auto absolute top-3 right-3 sm:top-4 sm:right-4 z-20 flex items-center gap-2">
+      <div
+        className="pointer-events-auto absolute top-0 right-3 sm:right-4 z-20 flex items-center gap-2"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top, 44px) + 10px)' }}
+      >
         <button
           onClick={() => setIsShopOpen(true)}
           data-tutorial="shop-btn"
@@ -381,8 +384,11 @@ function App() {
         </button>
       </div>
 
-      {/* ── Top info: greeting + tree count + checklist (top-left on mobile, top-right on desktop to the left of shop & sound toggle) ── */}
-      <div className="pointer-events-none absolute top-3 left-3 sm:top-4 sm:left-4 md:left-auto md:right-28 z-20 flex flex-col items-start md:items-end gap-2 max-w-[calc(100vw-7.5rem)] md:max-w-xs">
+      {/* ── Top info: greeting + tree count + checklist ── */}
+      <div
+        className="pointer-events-none absolute top-0 left-3 sm:left-4 md:left-auto md:right-28 z-20 flex flex-col items-start md:items-end gap-2 max-w-[calc(100vw-7.5rem)] md:max-w-xs"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top, 44px) + 10px)' }}
+      >
         <div className="pointer-events-auto text-left md:text-right drop-shadow-[0_2px_8px_rgba(0,0,0,0.35)]">
           {userName && (
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a8d878] mb-0.5">
