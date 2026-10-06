@@ -3,4 +3,4 @@ User-agent: *
 Allow: /
 Disallow: /scratch/
 
-Sitemap: https://forestly.app/sitemap.xml
+Sitemap: https://forestly-pdev.vercel.app/sitemap.xml
