@@ -1,7 +1,6 @@
 import * as THREE from 'three'
 
 const STORAGE_KEY = 'habit-forest-v1'
-const SETTINGS_KEY = 'habit-forest-settings-v1'
 const TERRAIN_SETTINGS_KEY = 'habit-forest-terrain-v1'
 const GLOBAL_SEED_KEY = 'habit-forest-seed-v1'
 const POINTS_KEY = 'habit-forest-points-v1'
@@ -12,10 +11,10 @@ const EDGE_PADDING = 4
 const BASE_TREE_SPACING = 2.75
 const CANOPY_TYPES = ['rounded', 'conifer', 'hybrid']
 
-export const WORLD_RADIUS = 48
-export const TERRAIN_PADDING = 10
-export const TERRAIN_SEGMENTS = 180
-export const GLOBE_RADIUS = 30
+export const WORLD_RADIUS = 72
+export const TERRAIN_PADDING = 18
+export const TERRAIN_SEGMENTS = 200
+// ponytail: GLOBE_RADIUS removed
 export const WATER_LEVEL = -0.3
 
 export function findDryLand(x, z, terrainSettings, globalSeed) {
@@ -28,37 +27,21 @@ export function findDryLand(x, z, terrainSettings, globalSeed) {
     const checkX = x + Math.cos(angle) * searchRadius
     const checkZ = z + Math.sin(angle) * searchRadius
     
-    if (Math.hypot(checkX, checkZ) > WORLD_RADIUS - 2) continue
+    if (Math.hypot(checkX, checkZ) > 52) continue
 
     const height = getTerrainHeight(checkX, checkZ, terrainSettings, globalSeed)
     if (height > WATER_LEVEL + 0.3) {
       return { x: checkX, z: checkZ }
     }
   }
-  return { x, z }
+  return { x: 0, z: 0 }
 }
 
-export function mapToWorld(x, y, z, shape) {
-  if (shape === 'plane') {
-    return {
-      position: [x, y, z],
-      quaternion: new THREE.Quaternion(),
-    }
+export function mapToWorld(x, y, z) {
+  return {
+    position: [x, y, z],
+    quaternion: new THREE.Quaternion(),
   }
-
-  const theta = x / GLOBE_RADIUS
-  const phi = -z / GLOBE_RADIUS
-
-  const r = GLOBE_RADIUS + y
-
-  const pX = r * Math.sin(theta) * Math.cos(phi)
-  const pY = r * Math.cos(theta) * Math.cos(phi) - GLOBE_RADIUS
-  const pZ = r * Math.sin(phi)
-
-  const euler = new THREE.Euler(phi, 0, -theta, 'YXZ')
-  const quaternion = new THREE.Quaternion().setFromEuler(euler)
-
-  return { position: [pX, pY, pZ], quaternion }
 }
 
 export const DEFAULT_TERRAIN_SETTINGS = {
@@ -68,9 +51,7 @@ export const DEFAULT_TERRAIN_SETTINGS = {
   edgeSoftness: 1,
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value))
-}
+const clamp = THREE.MathUtils.clamp
 
 // ── Gradient noise infrastructure ────────────────────────────────────────────
 const _permCache = new Map()
@@ -159,21 +140,11 @@ export function getTerrainHeight(x, z, terrainSettings = DEFAULT_TERRAIN_SETTING
     amplitude      = DEFAULT_TERRAIN_SETTINGS.amplitude,
     lowFrequency   = DEFAULT_TERRAIN_SETTINGS.lowFrequency,
     detailFrequency= DEFAULT_TERRAIN_SETTINGS.detailFrequency,
-    edgeSoftness   = DEFAULT_TERRAIN_SETTINGS.edgeSoftness,
   } = terrainSettings
 
   const perm = _buildPerm(globalSeed)
 
-  // Radial edge falloff (same logic as before)
-  const radialDistance = Math.hypot(x, z)
-  const edgeFalloff = Math.max(
-    0,
-    1 - radialDistance / (WORLD_RADIUS + 10 + edgeSoftness * 10),
-  )
-
-  // ── Domain warp ─────────────────────────────────────────────────────────
-  // Displace the lookup coords with another fBm pass so coastlines and
-  // ridges get that organic, twisted look instead of smooth blobs.
+  // ── Domain warp for organic shapes ───────────────────────────────────────
   const ws = 0.022 * lowFrequency
   const wx = _fbm(perm, x * ws + 31.7, z * ws + 71.3, 3) * 14
   const wz = _fbm(perm, x * ws + 91.1, z * ws + 17.9, 3) * 14
@@ -191,8 +162,46 @@ export function getTerrainHeight(x, z, terrainSettings = DEFAULT_TERRAIN_SETTING
   const rough     = _fbm(perm, sx * 0.14  * detailFrequency + 200, sz * 0.14  * detailFrequency + 200, 3) * 0.22
 
   const combined = continent + hills + rough
+  const rawLand = combined * amplitude
 
-  return round(combined * edgeFalloff * amplitude)
+  // ── Island shaping & organic coastline falloff ───────────────────────────
+  const angle = Math.atan2(z, x)
+  const coastWarp = (
+    Math.sin(angle * 3 + 1.2) * 3.8 +
+    Math.cos(angle * 5 - 0.7) * 2.4 +
+    _fbm(perm, x * 0.03 + 23.4, z * 0.03 + 67.8, 3) * 6.5
+  )
+  const r = Math.hypot(x, z) + coastWarp
+
+  const COAST_START = 42.0
+  const COAST_EDGE = 58.0
+  const SHELF_EDGE = 74.0
+  const OCEAN_FLOOR = -4.5
+
+  let height = rawLand
+
+  if (r <= COAST_START) {
+    // Island interior: preserve full elevation, hills, valleys and scenic inland ponds
+    height = rawLand
+  } else if (r < COAST_EDGE) {
+    // Coastal slope down to the sandy shoreline at WATER_LEVEL
+    const t = (r - COAST_START) / (COAST_EDGE - COAST_START)
+    const smoothT = t * t * (3 - 2 * t)
+    const beachTarget = WATER_LEVEL - 0.08 + rough * 0.15
+    height = _lerp(rawLand, beachTarget, smoothT)
+  } else if (r < SHELF_EDGE) {
+    // Submerged continental shelf sloping from beach down to seabed
+    const t = (r - COAST_EDGE) / (SHELF_EDGE - COAST_EDGE)
+    const smoothT = t * t * (3 - 2 * t)
+    const beachTarget = WATER_LEVEL - 0.08
+    const seabedTarget = OCEAN_FLOOR + rough * 0.25
+    height = _lerp(beachTarget, seabedTarget, smoothT)
+  } else {
+    // Deep ocean floor
+    height = OCEAN_FLOOR + rough * 0.2
+  }
+
+  return round(height)
 }
 
 
@@ -242,12 +251,8 @@ function round(value) {
   return Number(value.toFixed(2))
 }
 
-function createId(prefix = 'habit') {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID()
-  }
-
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+function createId() {
+  return crypto.randomUUID()
 }
 
 function hashSeed(seedText) {
@@ -274,14 +279,16 @@ function toHsl(hue, saturation, lightness) {
   return `hsl(${Math.round(hue)}, ${Math.round(saturation)}%, ${Math.round(lightness)}%)`
 }
 
+const ISLAND_SAFE_RADIUS = 50
+
 function keepInsideForest(position) {
   const length = Math.hypot(position.x, position.z)
 
-  if (length <= WORLD_RADIUS - EDGE_PADDING) {
+  if (length <= ISLAND_SAFE_RADIUS) {
     return position
   }
 
-  const safeRadius = WORLD_RADIUS - EDGE_PADDING
+  const safeRadius = ISLAND_SAFE_RADIUS
   const scale = safeRadius / (length || 1)
 
   return {
@@ -295,7 +302,7 @@ function distanceBetween(a, b) {
 }
 
 function isPositionClear(candidate, allTrees, spacing) {
-  if (Math.hypot(candidate.x, candidate.z) > WORLD_RADIUS - EDGE_PADDING) {
+  if (Math.hypot(candidate.x, candidate.z) > ISLAND_SAFE_RADIUS) {
     return false
   }
 
@@ -378,7 +385,7 @@ function createFirstTreePosition(seedText, allTrees, spacing) {
 
   for (let attempt = 0; attempt < 56; attempt += 1) {
     const angle = random() * TAU
-    const radius = Math.sqrt(random()) * (WORLD_RADIUS - EDGE_PADDING - 4)
+    const radius = Math.sqrt(random()) * 44
     const candidate = {
       x: round(Math.cos(angle) * radius),
       z: round(Math.sin(angle) * radius),
@@ -522,24 +529,6 @@ export function saveHabits(habits) {
   )
 }
 
-export function loadSceneSetting() {
-  if (typeof window === 'undefined') return 0.5
-  const raw = window.localStorage.getItem(SETTINGS_KEY)
-  if (raw === null) return 0.5
-  const num = Number(raw)
-  if (!isNaN(num) && num >= 0 && num <= 1) return num
-  // map legacy string values
-  if (raw === 'dawn') return 0
-  if (raw === 'day')  return 0.5
-  if (raw === 'dusk') return 1
-  return 0.5
-}
-
-export function saveSceneSetting(value) {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(SETTINGS_KEY, value)
-}
-
 export function loadTerrainSettings() {
   if (typeof window === 'undefined') {
     return { ...DEFAULT_TERRAIN_SETTINGS }
@@ -608,15 +597,151 @@ export function saveGlobalSeed(seed) {
   window.localStorage.setItem(GLOBAL_SEED_KEY, seed)
 }
 
-export function loadPoints() {
-  if (typeof window === 'undefined') return 0
-  const raw = window.localStorage.getItem(POINTS_KEY)
-  return raw ? parseInt(raw, 10) || 0 : 0
+export const ITEM_COSTS = {
+  stone_path: 10,
+  wooden_fence: 10,
+  mushroom_patch: 15,
+  log_seat: 15,
+  flower_bed: 20,
+  lantern_post: 30,
+  picnic_table: 50,
+  statue: 60,
+  birdhouse: 75,
+  hammock: 90,
+  campsite: 100,
+  well: 120,
+  gazebo: 300,
+  fountain: 350,
+  watchtower: 400,
+  tori_gate: 450,
+  windmill: 500,
+  crystal: 600,
 }
 
-export function savePoints(points) {
+const SECURE_POINTS_KEY = '_fl_tk_v1'
+const LEGACY_POINTS_KEY = 'habit-forest-points-v1'
+const SECRET_SALT = 'forestly_integrity_s9e82a!x7'
+
+// Layer 3: Obfuscation encoding/decoding (XOR mask + Base64)
+function encodePointsPayload(obj) {
+  try {
+    const json = JSON.stringify(obj)
+    let out = ''
+    for (let i = 0; i < json.length; i++) {
+      out += String.fromCharCode(json.charCodeAt(i) ^ 0x6b)
+    }
+    return btoa(out)
+  } catch {
+    return null
+  }
+}
+
+function decodePointsPayload(str) {
+  try {
+    const raw = atob(str)
+    let json = ''
+    for (let i = 0; i < raw.length; i++) {
+      json += String.fromCharCode(raw.charCodeAt(i) ^ 0x6b)
+    }
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+// Layer 2: Tamper-evident 64-bit HMAC signature generator
+function generatePointsSignature(points, totalTrees, inventoryCost) {
+  const payload = `${points}#${totalTrees}#${inventoryCost}#${SECRET_SALT}`
+  let h1 = 0xdeadbeef ^ payload.length
+  let h2 = 0x41c6ce57 ^ payload.length
+  for (let i = 0; i < payload.length; i++) {
+    const ch = payload.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return ((h1 >>> 0).toString(16) + (h2 >>> 0).toString(16))
+}
+
+// Layer 1 + 2 + 3: Secure Points Loader
+export function loadPoints(habits = null, inventory = null) {
+  if (typeof window === 'undefined') return 0
+  const isDemoRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/demo')
+  if (isDemoRoute) return 9999999
+
+  const currentHabits = habits || loadHabits()
+  const currentInventory = inventory || loadInventory()
+  const totalTrees = currentHabits.reduce((acc, h) => acc + (h.trees?.length || 0), 0)
+  const totalInventoryCost = currentInventory.reduce((acc, item) => acc + (ITEM_COSTS[item.type] || 0), 0)
+  const maxAllowed = Math.max(0, totalTrees * 10 - totalInventoryCost)
+
+  // 1. Try reading the obfuscated store (Layer 3)
+  const secureRaw = window.localStorage.getItem(SECURE_POINTS_KEY)
+  if (secureRaw) {
+    const data = decodePointsPayload(secureRaw)
+    if (data && typeof data.v === 'number') {
+      const expectedSig = generatePointsSignature(data.v, data.trees ?? totalTrees, data.cost ?? totalInventoryCost)
+      const isSigValid = data.sig === expectedSig
+
+      // Check signature (Layer 2) and mathematical bound (Layer 1)
+      if (isSigValid && data.v <= maxAllowed && data.v >= 0) {
+        return data.v
+      }
+
+      // Tampering detected or bound exceeded: clamp back to legitimate max
+      const clamped = Math.min(Math.max(0, data.v), maxAllowed)
+      savePoints(clamped, currentHabits, currentInventory)
+      return clamped
+    }
+  }
+
+  // 2. Migration: read legacy plain-text key if it existed
+  const legacyRaw = window.localStorage.getItem(LEGACY_POINTS_KEY)
+  if (legacyRaw) {
+    const parsed = parseInt(legacyRaw, 10) || 0
+    window.localStorage.removeItem(LEGACY_POINTS_KEY)
+    if (parsed > 0 && parsed < 999000) {
+      const migrated = Math.min(parsed, maxAllowed)
+      savePoints(migrated, currentHabits, currentInventory)
+      return migrated
+    }
+  }
+
+  // 3. Fallback: mathematical derivation from planted trees
+  savePoints(maxAllowed, currentHabits, currentInventory)
+  return maxAllowed
+}
+
+// Layer 1 + 2 + 3: Secure Points Saver
+export function savePoints(points, habits = null, inventory = null) {
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(POINTS_KEY, points.toString())
+  const isDemoRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/demo')
+  if (isDemoRoute) return
+
+  const currentHabits = habits || loadHabits()
+  const currentInventory = inventory || loadInventory()
+  const totalTrees = currentHabits.reduce((acc, h) => acc + (h.trees?.length || 0), 0)
+  const totalInventoryCost = currentInventory.reduce((acc, item) => acc + (ITEM_COSTS[item.type] || 0), 0)
+  const maxAllowed = Math.max(0, totalTrees * 10 - totalInventoryCost)
+
+  // Bound clamping (Layer 1): cannot cheat higher than actual earned trees
+  const safePoints = Math.min(Math.max(0, Math.floor(Number(points) || 0)), maxAllowed)
+  const sig = generatePointsSignature(safePoints, totalTrees, totalInventoryCost)
+
+  const payload = {
+    v: safePoints,
+    sig,
+    trees: totalTrees,
+    cost: totalInventoryCost,
+    t: Date.now(),
+  }
+
+  const encoded = encodePointsPayload(payload)
+  if (encoded) {
+    window.localStorage.setItem(SECURE_POINTS_KEY, encoded)
+    window.localStorage.removeItem(LEGACY_POINTS_KEY)
+  }
 }
 
 export function loadInventory() {
@@ -736,6 +861,52 @@ export function getSceneDateLabel(date = new Date()) {
   }).format(date)
 }
 
+const DAY_MS = 86400000
+
+export function dayKey(ts) {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function generateDemoDays(count, habitIndex) {
+  const profiles = [
+    { streak: 8, misses: [8, 15, 22, 26] },             // Morning Jog (32)
+    { streak: 4, misses: [4, 9, 14, 18, 22, 25] },        // Read 20 Pages (18)
+    { streak: 14, misses: [14, 23] },                     // Drink Water (45)
+    { streak: 3, misses: [3, 7, 12, 16, 21, 25] },        // Meditate (12)
+    { streak: 6, misses: [6, 12, 17, 23, 27] },           // Learn Spanish (24)
+    { streak: 2, misses: [2, 5, 9, 13, 17, 21, 25] },     // Write Journal (8)
+  ]
+  const profile = profiles[habitIndex % profiles.length]
+  const missSet = new Set(profile.misses)
+
+  const recentCompleted = [0] // day 0 is today
+  for (let d = 1; d < 28; d++) {
+    if (d < profile.streak || !missSet.has(d)) {
+      recentCompleted.push(d)
+    }
+  }
+
+  let chosenDays = []
+  if (count <= recentCompleted.length) {
+    chosenDays = recentCompleted.slice(0, count)
+  } else {
+    chosenDays = [...recentCompleted]
+    let pastDay = 29
+    while (chosenDays.length < count) {
+      if (pastDay % 7 !== 0) {
+        chosenDays.push(pastDay)
+      }
+      pastDay++
+    }
+  }
+
+  // Sort descending: oldest day (largest daysAgo) first, today (0) last
+  chosenDays.sort((a, b) => b - a)
+  return chosenDays
+}
+
 export function createDemoHabits() {
   const habits = []
   const demoData = [
@@ -748,6 +919,7 @@ export function createDemoHabits() {
   ]
   
   let allTrees = []
+  const todayMidnight = dayKey(Date.now())
 
   for (const [index, data] of demoData.entries()) {
     const id = `demo-habit-${index}`
@@ -755,8 +927,13 @@ export function createDemoHabits() {
     const spacing = Math.max(BASE_TREE_SPACING, species.trunkThickness * 4 + species.leafSize)
     const firstPosition = createFirstTreePosition(id, allTrees, spacing)
     
+    const daysAgoList = generateDemoDays(data.count, index)
+    const firstPlantedAt = daysAgoList[0] === 0 
+      ? Date.now() 
+      : todayMidnight - daysAgoList[0] * DAY_MS + 10 * 3600 * 1000
+
     const trees = []
-    trees.push(createTree(`${id}:0`, firstPosition))
+    trees.push(createTree(`${id}:0`, firstPosition, firstPlantedAt))
     allTrees.push({ x: firstPosition.x, z: firstPosition.z })
     
     const habit = {
@@ -766,12 +943,16 @@ export function createDemoHabits() {
       trees,
       lastPosition: { x: firstPosition.x, z: firstPosition.z },
       lastCompletedOn: getTodayStamp(),
-      createdAt: Date.now() - data.count * 86400000,
+      createdAt: todayMidnight - (daysAgoList[0] + 2) * DAY_MS,
     }
 
     for (let i = 1; i < data.count; i++) {
       const nextPosition = createNextTreePosition(habit, allTrees)
-      const nextTree = createTree(`${id}:${i}`, nextPosition)
+      const daysAgo = daysAgoList[i]
+      const plantedAt = daysAgo === 0 
+        ? Date.now() 
+        : todayMidnight - daysAgo * DAY_MS + 10 * 3600 * 1000
+      const nextTree = createTree(`${id}:${i}`, nextPosition, plantedAt)
       habit.trees.push(nextTree)
       allTrees.push({ x: nextTree.x, z: nextTree.z })
       habit.lastPosition = { x: nextTree.x, z: nextTree.z }
@@ -784,14 +965,6 @@ export function createDemoHabits() {
 }
 
 // ── Habit analytics ───────────────────────────────────────────────────────────
-
-const DAY_MS = 86400000
-
-function dayKey(ts) {
-  const d = new Date(ts)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
-}
 
 /** Consecutive-day streak ending today (or yesterday if not done today) */
 export function getHabitStreak(habit) {

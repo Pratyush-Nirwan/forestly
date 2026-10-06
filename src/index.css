@@ -47,14 +47,11 @@ canvas {
 }
 
 .forest-panel {
-  background:
-    linear-gradient(180deg, rgba(17, 38, 28, 0.66), rgba(14, 29, 22, 0.4)),
-    rgba(16, 28, 21, 0.24);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  box-shadow:
-    0 18px 50px rgba(12, 24, 19, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(24px);
+  background: rgba(14, 14, 14, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .forest-input {
@@ -66,9 +63,9 @@ canvas {
 
 .forest-input:focus {
   outline: none;
-  border-color: rgba(219, 237, 187, 0.55);
-  background: rgba(0, 0, 0, 0.24);
-  box-shadow: 0 0 0 4px rgba(211, 233, 178, 0.18);
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
 }
 
 ::-webkit-scrollbar {
@@ -83,3 +80,17 @@ canvas {
   border-radius: 999px;
   background: rgba(240, 248, 235, 0.2);
 }
+
+@keyframes hold-vibrate {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  20% { transform: translate(calc(-2.2px * var(--jitter, 1)), calc(1.3px * var(--jitter, 1))) rotate(calc(-0.6deg * var(--jitter, 1))); }
+  40% { transform: translate(calc(2px * var(--jitter, 1)), calc(-1.5px * var(--jitter, 1))) rotate(calc(0.6deg * var(--jitter, 1))); }
+  60% { transform: translate(calc(-1.8px * var(--jitter, 1)), calc(-1.8px * var(--jitter, 1))) rotate(calc(-0.5deg * var(--jitter, 1))); }
+  80% { transform: translate(calc(2px * var(--jitter, 1)), calc(1.4px * var(--jitter, 1))) rotate(calc(0.6deg * var(--jitter, 1))); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+
+.animate-vibrate {
+  animation: hold-vibrate var(--jitter-speed, 0.1s) infinite linear;
+}
+

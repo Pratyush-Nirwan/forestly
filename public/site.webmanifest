@@ -1,0 +1,21 @@
+{
+  "name": "Forestly",
+  "short_name": "Forestly",
+  "icons": [
+    {
+      "src": "/web-app-manifest-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/web-app-manifest-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "theme_color": "#0a3c32",
+  "background_color": "#062c24",
+  "display": "standalone"
+}

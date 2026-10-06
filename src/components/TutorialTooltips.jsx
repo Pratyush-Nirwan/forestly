@@ -33,7 +33,7 @@ const STEPS = [
   {
     target: 'habit-add-form',
     title: 'Add a Habit',
-    body: 'Type a habit name here and press Add. Every time you check it off, a new tree grows in your forest.',
+    body: 'Click the + button to add a new habit. Every time you check it off, a new tree grows in your forest.',
     placement: 'bottom',
     emoji: '✏️',
     rx: 16,
@@ -41,7 +41,7 @@ const STEPS = [
   {
     target: 'habit-list',
     title: 'Check In Daily',
-    body: 'Tick the checkbox on a habit to mark it done for today — your tree is planted the moment you check it off.',
+    body: 'Mark a habit done for today — your tree is planted the moment you complete it.',
     placement: 'right',
     emoji: '✅',
     rx: 16,

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import Tree from './Tree'
+import HoldToDeleteButton from './HoldToDeleteButton'
 import {
+  dayKey,
   getCompletionCalendar,
   getHabitCompletionRate,
   getHabitStreak,
@@ -18,174 +20,6 @@ const TERRAIN_SLIDERS = [
   { id: 'edgeSoftness', label: 'Edge Smoothing', min: 0.3, max: 2.0, step: 0.05 },
 ]
 
-// ── Sun-on-arc time-of-day slider ──────────────────────────────────────────────
-const ARC_CX = 100
-const ARC_CY = 100
-const ARC_R = 82
-
-const ARC_PRESETS = [
-  { id: 'dawn', label: 'Dawn', angle: 180, sunColor: '#ff9040', rayColor: '#ffb060' },
-  { id: 'day', label: 'Day', angle: 90, sunColor: '#ffe566', rayColor: '#fff0a0' },
-  { id: 'dusk', label: 'Dusk', angle: 0, sunColor: '#ff6035', rayColor: '#ff9060' },
-]
-
-// Colour lerp helper for the SVG sun (separate from Three.js lerpHex)
-function lerp3(a, b, t) {
-  const h2r = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]
-  const ra = h2r(a), rb = h2r(b)
-  return '#' + ra.map((v, i) => Math.round(v + (rb[i] - v) * t).toString(16).padStart(2, '0')).join('')
-}
-function arcColorAt(t) {
-  // t: 0=dawn, 0.5=day, 1=dusk – interpolate sun colour
-  if (t <= 0.5) {
-    const lt = t * 2
-    return {
-      sun: lerp3(ARC_PRESETS[0].sunColor, ARC_PRESETS[1].sunColor, lt),
-      ray: lerp3(ARC_PRESETS[0].rayColor, ARC_PRESETS[1].rayColor, lt),
-    }
-  }
-  const lt = (t - 0.5) * 2
-  return {
-    sun: lerp3(ARC_PRESETS[1].sunColor, ARC_PRESETS[2].sunColor, lt),
-    ray: lerp3(ARC_PRESETS[1].rayColor, ARC_PRESETS[2].rayColor, lt),
-  }
-}
-
-function arcPos(deg) {
-  const r = (deg * Math.PI) / 180
-  return { x: ARC_CX + ARC_R * Math.cos(r), y: ARC_CY - ARC_R * Math.sin(r) }
-}
-
-function SunArcSlider({ timeOfDay, onSetTimeOfDay }) {
-  const svgRef = useRef(null)
-  const dragging = useRef(false)
-
-  // timeOfDay is now a 0-1 number; convert to angle for display
-  const displayAngle = (1 - timeOfDay) * 180
-  const sunPos = arcPos(displayAngle)
-  const { sun: sunColor, ray: rayColor } = arcColorAt(timeOfDay)
-
-  const getAngleAndT = useCallback((e) => {
-    if (!svgRef.current) return null
-    const rect = svgRef.current.getBoundingClientRect()
-    const cx = e.touches ? e.touches[0].clientX : e.clientX
-    const cy = e.touches ? e.touches[0].clientY : e.clientY
-    const svgX = ((cx - rect.left) / rect.width) * 200
-    const svgY = ((cy - rect.top) / rect.height) * 120
-    const deg = Math.atan2(ARC_CY - svgY, svgX - ARC_CX) * (180 / Math.PI)
-    const angle = Math.max(0, Math.min(180, deg))
-    return { angle, t: 1 - angle / 180 }
-  }, [])
-
-  const onMove = useCallback((e) => {
-    if (!dragging.current) return
-    const result = getAngleAndT(e)
-    if (result) onSetTimeOfDay(Math.max(0, Math.min(1, result.t)))
-  }, [getAngleAndT, onSetTimeOfDay])
-
-  const onUp = useCallback((e) => {
-    if (!dragging.current) return
-    dragging.current = false
-    const result = getAngleAndT(e)
-    if (result) onSetTimeOfDay(Math.max(0, Math.min(1, result.t)))
-  }, [getAngleAndT, onSetTimeOfDay])
-
-  useEffect(() => {
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    window.addEventListener('touchmove', onMove, { passive: true })
-    window.addEventListener('touchend', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      window.removeEventListener('touchmove', onMove)
-      window.removeEventListener('touchend', onUp)
-    }
-  }, [onMove, onUp])
-
-  // Find nearest preset for label highlight
-  const nearest = ARC_PRESETS.reduce((b, p) =>
-    Math.abs(p.angle - displayAngle) < Math.abs(b.angle - displayAngle) ? p : b
-  )
-
-  const labelProps = {
-    dawn: { x: arcPos(180).x + 2, y: arcPos(180).y + 14 },
-    day: { x: arcPos(90).x, y: arcPos(90).y - 10 },
-    dusk: { x: arcPos(0).x - 2, y: arcPos(0).y + 14 },
-  }
-
-  return (
-    <div>
-      <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-[#d4e4cc]/60">
-        Time of Day
-      </p>
-      <svg
-        ref={svgRef}
-        viewBox="0 0 200 120"
-        className="w-full cursor-grab active:cursor-grabbing select-none"
-        onMouseDown={e => { e.preventDefault(); dragging.current = true }}
-        onTouchStart={() => { dragging.current = true }}
-      >
-        <defs>
-          <linearGradient id="sun-arc-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#ff9040" stopOpacity="0.55" />
-            <stop offset="50%" stopColor="#ffe566" stopOpacity="0.70" />
-            <stop offset="100%" stopColor="#ff6035" stopOpacity="0.55" />
-          </linearGradient>
-          <radialGradient id="sky-glow" cx="50%" cy="100%" r="60%">
-            <stop offset="0%" stopColor="#ffe080" stopOpacity="0.08" />
-            <stop offset="100%" stopColor="#ffe080" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-
-        <rect x="0" y="0" width="200" height="120" fill="url(#sky-glow)" rx="8" />
-
-        {/* Arc track */}
-        <path
-          d={`M ${ARC_CX - ARC_R} ${ARC_CY} A ${ARC_R} ${ARC_R} 0 0 1 ${ARC_CX + ARC_R} ${ARC_CY}`}
-          fill="none" stroke="url(#sun-arc-grad)" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"
-        />
-
-        {/* Tick dots and labels */}
-        {ARC_PRESETS.map(p => {
-          const pos = arcPos(p.angle)
-          const lp = labelProps[p.id]
-          const isNearest = p.id === nearest.id
-          return (
-            <g key={p.id}>
-              <circle cx={pos.x} cy={pos.y} r={isNearest ? 3.5 : 2} fill="white" opacity={isNearest ? 0.55 : 0.22} />
-              <text x={lp.x} y={lp.y} textAnchor="middle" fontSize="8.5" fill="white"
-                opacity={isNearest ? 0.9 : 0.35} fontFamily="system-ui, sans-serif">
-                {p.label}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* Sun glow */}
-        <circle cx={sunPos.x} cy={sunPos.y} r={22} fill={sunColor} opacity={0.06} />
-        <circle cx={sunPos.x} cy={sunPos.y} r={14} fill={sunColor} opacity={0.14} />
-        <circle cx={sunPos.x} cy={sunPos.y} r={9} fill={sunColor} opacity={0.24} />
-
-        {/* Rays */}
-        {[0, 45, 90, 135, 180, 225, 270, 315].map(deg => {
-          const r2 = (deg * Math.PI) / 180
-          return (
-            <line key={deg}
-              x1={sunPos.x + Math.cos(r2) * 10} y1={sunPos.y + Math.sin(r2) * 10}
-              x2={sunPos.x + Math.cos(r2) * 14} y2={sunPos.y + Math.sin(r2) * 14}
-              stroke={rayColor} strokeWidth="1.5" strokeLinecap="round" opacity="0.8"
-            />
-          )
-        })}
-
-        {/* Sun core + specular */}
-        <circle cx={sunPos.x} cy={sunPos.y} r={7} fill={sunColor} />
-        <circle cx={sunPos.x - 1.8} cy={sunPos.y - 1.8} r={2.2} fill="white" opacity={0.38} />
-      </svg>
-    </div>
-  )
-}
 
 
 const PREVIEW_TREE = {
@@ -196,6 +30,91 @@ const PREVIEW_TREE = {
   plantedAt: Date.now() - 30000, // pre-grown, no animation
 }
 
+function calculateTreeFraming(species) {
+  if (!species) {
+    return { yOffset: -1.5, cameraDistance: 7.5, fov: 42 }
+  }
+
+  const trunkHeight = species.trunkHeight ?? 2.6
+  const crownLift = species.crownLift ?? 0.84
+  const canopyHeight = species.canopyHeight ?? 2.2
+  const canopyWidth = species.canopyWidth ?? 1.8
+  const leafSize = species.leafSize ?? 0.85
+  const canopyType = species.canopyType || 'rounded'
+  const trunkThickness = species.trunkThickness ?? 0.28
+
+  // Canopy base in tree coordinates
+  const canopyBaseY = trunkHeight * crownLift
+
+  let canopyRelTop = canopyHeight
+  let canopyRelBottom = 0
+  let maxCanopyRadius = canopyWidth * 0.75
+
+  if (canopyType === 'conifer') {
+    // 3 cone tiers:
+    // Top cone is at y = canopyHeight * 0.93 with scale = canopyWidth * 0.56
+    // Shared cone geometry height is 1.8, extending +0.9 * scale above its position
+    canopyRelTop = canopyHeight * 0.93 + 0.9 * (canopyWidth * 0.56)
+    // Bottom cone is at y = canopyHeight * 0.12 with scale = canopyWidth * 0.92
+    canopyRelBottom = canopyHeight * 0.12 - 0.9 * (canopyWidth * 0.92)
+    maxCanopyRadius = 0.95 * (canopyWidth * 0.92)
+  } else {
+    // rounded or hybrid:
+    // Top central orb is at y = canopyHeight * 0.52 with scale = leafSize * 1.08 (Ico radius 1)
+    const centralOrbTop = canopyHeight * 0.52 + leafSize * 1.08
+    // Clustered leaves up to y = canopyHeight * 0.34 with scale up to leafSize * 1.06
+    const clusterTop = canopyHeight * 0.34 + (canopyType === 'hybrid' ? 0.9 : 1.0) * (leafSize * 1.06)
+    canopyRelTop = Math.max(centralOrbTop, clusterTop)
+    canopyRelBottom = canopyHeight * 0.16 - leafSize * 1.06
+    maxCanopyRadius = canopyWidth * 0.52 + leafSize * 1.06
+  }
+
+  // Trunk underground is -1.2 in Tree.jsx (fullTrunkHeight extends from -1.2 to trunkHeight)
+  const trunkBottom = -1.2
+  const trunkTop = trunkHeight
+
+  // Account for outline meshes (scale multiplier 1.05 - 1.20) and gentle sway
+  const outlineTopPadding = canopyType === 'conifer' ? 0.25 * (canopyWidth * 0.56) : 0.2 * (leafSize * 1.08)
+  const rawTop = Math.max(trunkTop, canopyBaseY + canopyRelTop) + outlineTopPadding
+  const rawBottom = Math.min(trunkBottom, canopyBaseY + canopyRelBottom) - 0.1
+
+  // Outer group scale in TreePreview is 1.02
+  const scaleMul = 1.02
+  const top = rawTop * scaleMul
+  const bottom = rawBottom * scaleMul
+  const totalHeight = Math.max(1.5, top - bottom)
+  const totalWidth = Math.max(1.2, Math.max(maxCanopyRadius * 2, trunkThickness * 2.5) * scaleMul)
+  const visualCenterY = (top + bottom) / 2
+
+  // Container dimensions: width 92px, height 118px -> aspect ratio approx 0.7797
+  const aspect = 92 / 118
+  const fov = 42
+  const tanFovHalf = Math.tan(((fov / 2) * Math.PI) / 180)
+
+  // 26% breathing room padding so the tree apex and base never touch card boundaries
+  const paddingFactor = 1.26
+  const distForHeight = (totalHeight * paddingFactor) / (2 * tanFovHalf)
+  const distForWidth = (totalWidth * paddingFactor) / (2 * tanFovHalf * aspect)
+  const cameraDistance = Math.max(distForHeight, distForWidth, 5.8)
+
+  return {
+    yOffset: -visualCenterY,
+    cameraDistance,
+    fov,
+  }
+}
+
+function CameraController({ distance, fov }) {
+  const { camera } = useThree()
+  useEffect(() => {
+    camera.position.set(0.25, 0, distance)
+    camera.fov = fov
+    camera.lookAt(0, 0, 0)
+    camera.updateProjectionMatrix()
+  }, [camera, distance, fov])
+  return null
+}
+
 function SpinGroup({ children, yOffset }) {
   const ref = useRef(null)
   useFrame((_, dt) => { if (ref.current) ref.current.rotation.y += dt * 0.55 })
@@ -203,30 +122,31 @@ function SpinGroup({ children, yOffset }) {
 }
 
 function TreePreview({ species }) {
-  // Approximate tree visual midpoint so it stays centred in the thumbnail
-  // regardless of species height variety (trunk 1.7–3.8, canopy 1.7–2.9)
-  const approxTop = species.trunkHeight * species.crownLift + species.canopyHeight
-  const approxBase = -1.2  // trunkUnderground constant in Tree.jsx
-  const yOffset = -((approxTop + approxBase) / 2)
+  const { yOffset, cameraDistance, fov } = useMemo(
+    () => calculateTreeFraming(species),
+    [species]
+  )
 
   return (
-    <div className="shrink-0 rounded-xl overflow-hidden" style={{ width: 80, height: 112 }}>
+    <div className="shrink-0 rounded-xl overflow-hidden -translate-x-2" style={{ width: 92, height: 118 }}>
       <Canvas
-        camera={{ position: [2.5, 0, 9.5], fov: 54, near: 0.3, far: 100 }}
+        camera={{ position: [0.25, 0, cameraDistance], fov, near: 0.2, far: 100 }}
         gl={{ alpha: true, antialias: true }}
         dpr={[1, 2]}
         style={{ background: 'transparent' }}
       >
-        <ambientLight intensity={0.9} />
-        <directionalLight position={[5, 8, 5]} intensity={1.1} />
+        <CameraController distance={cameraDistance} fov={fov} />
+        <ambientLight intensity={0.95} />
+        <directionalLight position={[5, 8, 5]} intensity={1.15} />
         <SpinGroup yOffset={yOffset}>
-          <Tree
-            species={species}
-            tree={PREVIEW_TREE}
-            mappedPosition={[0, 0, 0]}
-            mappedQuaternion={[0, 0, 0, 1]}
-            isSelected={false}
-          />
+          <group scale={1.02}>
+            <Tree
+              species={species}
+              tree={PREVIEW_TREE}
+              mappedPosition={[0, 0, 0]}
+              isSelected={false}
+            />
+          </group>
         </SpinGroup>
       </Canvas>
     </div>
@@ -234,27 +154,135 @@ function TreePreview({ species }) {
 }
 
 
-// ── 28-day dot calendar ───────────────────────────────────────────────────────
-function CalendarDots({ habit }) {
-  const days = useMemo(() => getCompletionCalendar(habit, 28), [habit])
-  const weeks = useMemo(
-    () => Array.from({ length: 4 }, (_, w) => days.slice(w * 7, w * 7 + 7)),
-    [days],
-  )
+const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+
+// ── Ongoing month tracking calendar (Sun - Sat) ─────────────────────────────
+function CalendarDots({ habit, onToggleToday }) {
+  const todayMs = useMemo(() => dayKey(Date.now()), [])
+
+  const { weeks } = useMemo(() => {
+    const done = new Set(habit.trees.map(t => dayKey(t.plantedAt)))
+    const now = new Date(todayMs)
+    const year = now.getFullYear()
+    const month = now.getMonth() // 0-indexed
+    const todayDate = now.getDate()
+
+    // 1st day of the current month
+    const firstDay = new Date(year, month, 1)
+    const startDayOfWeek = firstDay.getDay() // 0 = Sunday, 6 = Saturday
+
+    // Total days in the current month
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+
+    const cells = []
+
+    // 1. Empty padding cells before the 1st of the month
+    for (let i = 0; i < startDayOfWeek; i++) {
+      cells.push({ isEmpty: true, id: `pre-${i}` })
+    }
+
+    // 2. Day cells for 1..daysInMonth
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(year, month, d)
+      date.setHours(0, 0, 0, 0)
+      const ms = date.getTime()
+      const isToday = d === todayDate
+      const isFuture = ms > todayMs
+
+      cells.push({
+        isEmpty: false,
+        id: `day-${d}`,
+        dayNumber: d,
+        ms,
+        completed: done.has(ms),
+        isToday,
+        isFuture,
+      })
+    }
+
+    // 3. Trailing empty padding cells to complete the last row
+    const remainder = cells.length % 7
+    if (remainder > 0) {
+      const needed = 7 - remainder
+      for (let i = 0; i < needed; i++) {
+        cells.push({ isEmpty: true, id: `post-${i}` })
+      }
+    }
+
+    // 4. Split into rows of 7
+    const weekRows = []
+    for (let i = 0; i < cells.length; i += 7) {
+      weekRows.push(cells.slice(i, i + 7))
+    }
+
+    return { weeks: weekRows }
+  }, [habit, todayMs])
+
   return (
-    <div className="mt-2 flex flex-col gap-[3px]">
-      {weeks.map((week, wi) => (
-        <div key={wi} className="flex gap-[3px]">
-          {week.map((day, di) => (
-            <div
-              key={di}
-              title={new Date(day.ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-              className={`h-[7px] w-[7px] rounded-[2px] transition-colors ${day.completed ? 'bg-[#a8d878]' : 'bg-white/10'
-                }`}
-            />
-          ))}
-        </div>
-      ))}
+    <div className="flex flex-col gap-1.5 w-full">
+      {/* Weekday column indicators: Sunday to Saturday */}
+      <div className="grid grid-cols-7 gap-1.5 text-center">
+        {WEEKDAY_LABELS.map((label, i) => (
+          <span key={i} className="text-[8px] font-semibold text-[#d4e4cc]/45 uppercase">
+            {label}
+          </span>
+        ))}
+      </div>
+
+      {/* Current month calendar grid with boxes in place of dates */}
+      <div className="flex flex-col gap-1.5">
+        {weeks.map((week, wi) => (
+          <div key={wi} className="grid grid-cols-7 gap-1.5">
+            {week.map((cell, di) => {
+              if (cell.isEmpty) {
+                return <div key={cell.id || di} className="aspect-square w-full" />
+              }
+
+              const { isToday, isFuture, completed, ms, dayNumber } = cell
+              const dateStr = new Date(ms).toLocaleDateString(undefined, {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric',
+              })
+              const titleText = isToday
+                ? `Today (${dateStr}) • ${completed ? 'Completed ✓ (click to undo)' : 'Not completed (click to check off)'}`
+                : isFuture
+                  ? `${dateStr} • Upcoming`
+                  : `${dateStr} • ${completed ? 'Planted tree ✓' : 'No tree planted'}`
+
+              return (
+                <div
+                  key={cell.id || dayNumber}
+                  role={isToday ? 'button' : undefined}
+                  tabIndex={isToday ? 0 : undefined}
+                  onClick={isToday ? onToggleToday : undefined}
+                  onKeyDown={isToday ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleToday(); } } : undefined}
+                  title={titleText}
+                  className={`aspect-square w-full rounded-[4px] transition-all flex items-center justify-center ${
+                    isToday
+                      ? completed
+                        ? 'bg-[#a8d878] ring-2 ring-[#a8d878]/55 shadow-[0_0_8px_rgba(168,216,120,0.4)] cursor-pointer hover:scale-105 active:scale-95'
+                        : 'bg-[#a8d878]/15 border border-dashed border-[#a8d878]/70 hover:bg-[#a8d878]/30 cursor-pointer hover:scale-105 active:scale-95'
+                      : isFuture
+                        ? 'bg-white/[0.04] border border-white/[0.03] cursor-default'
+                        : completed
+                          ? 'bg-[#a8d878]/90 hover:brightness-110 shadow-[0_0_4px_rgba(168,216,120,0.2)]'
+                          : 'bg-white/[0.08] border border-white/[0.04] hover:bg-white/[0.14]'
+                  }`}
+                >
+                  {isToday && (
+                    <span
+                      className={`block h-1.5 w-1.5 rounded-full ${
+                        completed ? 'bg-[#182a12]' : 'bg-[#a8d878] animate-pulse'
+                      }`}
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -276,99 +304,96 @@ function HabitCard({ habit, completedToday, isPending, onComplete, onUncomplete,
 
   return (
     <div
-      className={`rounded-[20px] border px-4 py-3.5 transition-all ${withered
+      className={`rounded-2xl border px-4 py-3.5 transition-all ${withered
         ? 'border-amber-400/45 bg-amber-950/25'
-        : completedToday
-          ? 'border-[#a8d878]/30 bg-[#1a3320]/40'
-          : 'border-white/10 bg-black/12 hover:border-white/20 hover:bg-black/18'
+        : 'border-white/10 bg-black/12 hover:border-white/20 hover:bg-black/18'
         }`}
     >
-      {/* Row 1: checkbox + name + badges + delete */}
-      <div className="flex items-start gap-3">
-        <div className="relative mt-[3px] shrink-0">
-          <input
-            type="checkbox"
-            checked={completedToday}
-            disabled={isPending}
-            onChange={handleCheckboxClick}
-            className="h-4 w-4 cursor-pointer accent-[#a8d878]"
-            title={completedToday ? 'Click to undo today\'s check-in' : 'Mark as done'}
-          />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <p className={`truncate text-sm font-semibold ${completedToday ? 'text-[#c8eaac]' : 'text-white'}`}>
-              {habit.name}
-            </p>
-            <div className="flex shrink-0 items-center gap-1.5">
-              {/* Streak */}
-              {streak > 0 && (
-                <span className="rounded-full bg-orange-500/20 px-2 py-0.5 text-[10px] font-semibold text-orange-300">
-                  🔥 {streak}d
-                </span>
-              )}
-              {/* Milestone */}
-              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${milestone.level >= 4 ? 'border-yellow-400/40 text-yellow-300' :
-                milestone.level >= 3 ? 'border-emerald-400/35 text-emerald-300' :
-                  milestone.level >= 2 ? 'border-green-400/30 text-green-300' :
-                    'border-white/15 text-[#d4e4cc]/75'
-                }`}>
-                {milestone.emoji} {milestone.label}
-              </span>
-              {/* Delete */}
-              {!confirmDelete ? (
-                <button
-                  type="button"
-                  title="Delete habit"
-                  onClick={() => setConfirmDelete(true)}
-                  className="rounded-full p-1 text-[#d4e4cc]/30 transition hover:bg-red-500/20 hover:text-red-400"
-                >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                    <path d="M9.5 2.5l-7 7M2.5 2.5l7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => onDelete(habit.id)}
-                  onBlur={() => setConfirmDelete(false)}
-                  autoFocus
-                  className="rounded-full bg-red-500/30 px-2 py-0.5 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/50"
-                >
-                  Confirm?
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Stats row */}
-          <p className="mt-0.5 text-[10px] text-[#dce9d6]/55">
-            {habit.trees.length} trees · best {longest}d streak
+      {/* Row 1: name + badges + delete */}
+      <div>
+        <div className="flex items-center justify-between gap-2">
+          <p className={`truncate text-sm font-semibold ${completedToday ? 'text-[#c8eaac]' : 'text-white'}`}>
+            {habit.name}
           </p>
-
-          {/* Withered warning */}
-          {withered && (
-            <p className="mt-1 text-[10px] text-amber-400/85">⚠ Needs attention — check in today!</p>
-          )}
-
-          {/* Calendar + tree preview side by side */}
-          <div className="mt-2 flex items-start gap-2">
-            <div className="flex-1">
-              <CalendarDots habit={habit} />
-              <p className="mt-1.5 text-[10px] text-[#dce9d6]/60">
-                {completedToday ? '✓ Tree planted today' : 'Check off to plant a tree today'}
-              </p>
-            </div>
-            <TreePreview species={habit.species} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* Streak */}
+            {streak > 0 && (
+              <span className="rounded-full bg-orange-500/20 px-2 py-0.5 text-[10px] font-semibold text-orange-300">
+                🔥 {streak}d
+              </span>
+            )}
+            {/* Milestone */}
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${milestone.level >= 4 ? 'border-yellow-400/40 text-yellow-300' :
+              milestone.level >= 3 ? 'border-emerald-400/35 text-emerald-300' :
+                milestone.level >= 2 ? 'border-green-400/30 text-green-300' :
+                  'border-white/15 text-[#d4e4cc]/75'
+              }`}>
+              {milestone.emoji} {milestone.label}
+            </span>
+            {/* Delete */}
+            {!confirmDelete ? (
+              <button
+                type="button"
+                title="Delete habit"
+                onClick={() => setConfirmDelete(true)}
+                className="rounded-full p-1 text-[#d4e4cc]/30 transition hover:bg-red-500/20 hover:text-red-400"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                  <path d="M9.5 2.5l-7 7M2.5 2.5l7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onDelete(habit.id)}
+                onBlur={() => setConfirmDelete(false)}
+                autoFocus
+                className="rounded-full bg-red-500/30 px-2 py-0.5 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/50"
+              >
+                Confirm?
+              </button>
+            )}
           </div>
+        </div>
+
+        {/* Stats row */}
+        <p className="mt-0.5 text-[10px] text-[#dce9d6]/55">
+          {habit.trees.length} {habit.trees.length === 1 ? 'tree' : 'trees'}
+        </p>
+
+        {/* Withered warning */}
+        {withered && (
+          <p className="mt-1 text-[10px] text-amber-400/85">⚠ Needs attention — check in today!</p>
+        )}
+
+        {/* Calendar + tree preview side by side */}
+        <div className="mt-2.5 flex items-start gap-2">
+          <div className="flex-1 min-w-0 max-w-[145px]">
+            <CalendarDots habit={habit} onToggleToday={handleCheckboxClick} />
+          </div>
+          <TreePreview species={habit.species} />
         </div>
       </div>
+
+      {/* Bottom left corner of card */}
+      <button
+        type="button"
+        onClick={handleCheckboxClick}
+        disabled={isPending}
+        className={`mt-2 text-left text-[10px] transition-colors cursor-pointer hover:underline ${
+          completedToday ? 'text-[#a8d878]/80' : 'text-[#dce9d6]/50 hover:text-[#dce9d6]/80'
+        }`}
+      >
+        {completedToday ? 'Tree planted today' : 'Plant a tree today'}
+      </button>
     </div>
   )
 }
 
 // ── Stats tab ─────────────────────────────────────────────────────────────────
 function StatsTab({ habits, todayStamp }) {
+  const DAY_MS = 86400000
+
   const stats = useMemo(() => {
     const totalTrees = habits.reduce((s, h) => s + h.trees.length, 0)
     const bestStreak = habits.reduce((m, h) => Math.max(m, getLongestStreak(h)), 0)
@@ -384,6 +409,35 @@ function StatsTab({ habits, todayStamp }) {
     })).sort((a, b) => b.rate - a.rate)
     return { totalTrees, bestStreak, completedToday, witheredCount, ratedHabits }
   }, [habits, todayStamp])
+
+  const weeklyData = useMemo(() => {
+    const todayMs = dayKey(Date.now())
+    const days = []
+    let totalPlantedThisWeek = 0
+
+    for (let i = 6; i >= 0; i--) {
+      const ms = todayMs - i * DAY_MS
+      const date = new Date(ms)
+      const dayLabel = date.toLocaleDateString(undefined, { weekday: 'short' })
+      const isToday = i === 0
+
+      // Count trees planted on this day across all habits
+      let count = 0
+      habits.forEach(h => {
+        h.trees.forEach(t => {
+          if (dayKey(t.plantedAt) === ms) {
+            count++
+          }
+        })
+      })
+
+      totalPlantedThisWeek += count
+      days.push({ ms, dayLabel, count, isToday })
+    }
+
+    const maxCount = Math.max(1, habits.length, ...days.map(d => d.count))
+    return { days, totalPlantedThisWeek, maxCount }
+  }, [habits])
 
   if (!habits.length) {
     return (
@@ -410,19 +464,73 @@ function StatsTab({ habits, todayStamp }) {
         ))}
       </div>
 
+      {/* ── 7-Day Activity Graph ── */}
+      <div className="rounded-2xl border border-white/10 bg-black/12 p-3.5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-[#d4e4cc]/55">Weekly Activity</p>
+            <p className="text-xs font-semibold text-white/90 mt-0.5">
+              {weeklyData.totalPlantedThisWeek} {weeklyData.totalPlantedThisWeek === 1 ? 'tree' : 'trees'} planted this week
+            </p>
+          </div>
+          <span className="rounded-full bg-[#a8d878]/15 border border-[#a8d878]/30 px-2.5 py-0.5 text-[10px] font-bold text-[#a8d878]">
+            7-Day Graph
+          </span>
+        </div>
+
+        {/* Bar chart grid */}
+        <div className="grid grid-cols-7 gap-1.5 items-end h-28 pt-2 pb-1 px-1">
+          {weeklyData.days.map((day, idx) => {
+            const heightPercent = day.count > 0
+              ? Math.max(20, Math.round((day.count / weeklyData.maxCount) * 100))
+              : 8
+
+            return (
+              <div key={day.ms || idx} className="flex flex-col items-center h-full justify-end gap-1.5 group">
+                {/* Count indicator */}
+                <span className={`text-[9px] font-bold transition-all ${
+                  day.count > 0 ? 'text-[#a8d878]' : 'text-white/20'
+                }`}>
+                  {day.count > 0 ? day.count : '0'}
+                </span>
+
+                {/* Vertical Bar Track */}
+                <div className="w-full max-w-[24px] h-16 rounded-lg bg-white/[0.04] p-0.5 flex flex-col justify-end overflow-hidden border border-white/[0.04]">
+                  <div
+                    className={`w-full rounded-md transition-all duration-500 ${
+                      day.count > 0
+                        ? 'bg-gradient-to-t from-[#528d39] to-[#a8d878] shadow-[0_0_8px_rgba(168,216,120,0.35)]'
+                        : 'bg-white/[0.08]'
+                    }`}
+                    style={{ height: `${heightPercent}%` }}
+                  />
+                </div>
+
+                {/* Day of week */}
+                <span className={`text-[9px] font-semibold transition-colors ${
+                  day.isToday ? 'text-[#a8d878] font-bold' : 'text-[#d4e4cc]/45'
+                }`}>
+                  {day.dayLabel}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
       {/* Per-habit completion bars */}
-      <div>
-        <p className="mb-2 text-[10px] uppercase tracking-widest text-[#d4e4cc]/55">30-day completion rate</p>
-        <div className="space-y-2.5">
+      <div className="rounded-2xl border border-white/10 bg-black/12 p-3.5">
+        <p className="mb-2.5 text-[10px] uppercase tracking-widest text-[#d4e4cc]/55">30-day completion rate</p>
+        <div className="space-y-3">
           {stats.ratedHabits.map(h => (
             <div key={h.name}>
-              <div className="mb-1 flex justify-between text-[10px]">
-                <span className="truncate text-[#dce9d6]/80">{h.milestone.emoji} {h.name}</span>
-                <span className="ml-2 shrink-0 text-[#a8d878]">{h.rate}%</span>
+              <div className="mb-1.5 flex justify-between text-[10px]">
+                <span className="truncate text-[#dce9d6]/85 font-medium">{h.milestone.emoji} {h.name}</span>
+                <span className="ml-2 shrink-0 font-bold text-[#a8d878]">{h.rate}%</span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-[#7ac356] to-[#c2e88a] transition-all duration-500"
+                  className="h-full rounded-full bg-gradient-to-r from-[#528d39] to-[#a8d878] transition-all duration-500"
                   style={{ width: `${h.rate}%` }}
                 />
               </div>
@@ -434,13 +542,31 @@ function StatsTab({ habits, todayStamp }) {
       {/* Per-habit streak table */}
       <div>
         <p className="mb-2 text-[10px] uppercase tracking-widest text-[#d4e4cc]/55">Streaks</p>
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {stats.ratedHabits.map(h => (
-            <div key={h.name} className="flex items-center justify-between rounded-xl border border-white/8 bg-black/10 px-3 py-2">
-              <p className="truncate text-xs text-[#dce9d6]/80">{h.name}</p>
-              <div className="flex shrink-0 gap-3 text-[10px] text-[#d4e4cc]/60">
-                <span className="text-orange-300">🔥 {h.streak}d now</span>
-                <span>best {h.longest}d</span>
+            <div
+              key={h.name}
+              className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/12 px-3.5 py-3 transition hover:border-white/20 hover:bg-black/16"
+            >
+              <div className="min-w-0 pr-2">
+                <p className="truncate text-xs font-semibold text-[#dce9d6]/90">
+                  {h.milestone.emoji} {h.name}
+                </p>
+                <p className="text-[10px] text-[#d4e4cc]/45 mt-0.5">
+                  {h.trees} {h.trees === 1 ? 'tree' : 'trees'} planted
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2 text-[10px]">
+                <span className={`rounded-full px-2.5 py-0.5 font-semibold ${
+                  h.streak > 0
+                    ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30'
+                    : 'bg-white/5 text-[#d4e4cc]/40 border border-white/10'
+                }`}>
+                  🔥 {h.streak}d now
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[#d4e4cc]/70">
+                  best {h.longest}d
+                </span>
               </div>
             </div>
           ))}
@@ -545,7 +671,7 @@ function ControlsTab() {
           </div>
         </div>
       ))}
-      <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3">
+      <div className="rounded-xl border border-white/20 bg-white/10 px-4 py-3 shadow-sm">
         <p className="text-[10px] font-semibold text-[#d4e4cc]/60 uppercase tracking-widest mb-1.5">Tip</p>
         <p className="text-[11px] leading-5 text-[#dce9d6]/65">
           {tip.split('Area View').map((part, i, arr) =>
@@ -566,20 +692,21 @@ function HabitPanel({
   todayStamp,
   sceneDateLabel,
   forestTotals,
-  timeOfDay,
   viewMode,
   onAddHabit,
   onCompleteHabit,
   onUncompleteHabit,
-  onSetTimeOfDay,
   onSetViewMode,
   onDeleteHabit,
   globalSeed,
   onSetGlobalSeed,
   terrainSettings,
   onSetTerrainSettings,
+  onResetProgress,
+  onOpenLegal,
 }) {
   const [draftHabit, setDraftHabit] = useState('')
+  const [isAddingHabit, setIsAddingHabit] = useState(false)
   const [seedInput, setSeedInput] = useState(globalSeed)
   const [activeTab, setActiveTab] = useState('habits') // 'habits' | 'stats' | 'settings'
 
@@ -589,6 +716,7 @@ function HabitPanel({
     if (!trimmed) return
     onAddHabit(trimmed)
     setDraftHabit('')
+    setIsAddingHabit(false)
   }
 
   const witheredCount = useMemo(
@@ -634,28 +762,14 @@ function HabitPanel({
         aria-label="Open habit panel"
         onClick={() => setDesktopOpen(true)}
         className={[
-          'forest-panel pointer-events-auto fixed left-0 top-5 z-50 hidden flex-row items-center gap-2 rounded-r-2xl border-l-0 px-3 py-2.5 text-[#edf6ea] shadow-lg transition-all duration-300 md:flex',
+          'forest-panel pointer-events-auto fixed left-0 top-5 z-50 hidden flex-row items-center justify-center rounded-r-2xl border-l-0 px-2.5 py-3 text-[#edf6ea] shadow-lg transition-all duration-300 md:flex hover:text-white',
           desktopOpen ? 'opacity-0 pointer-events-none -translate-x-full' : 'opacity-100 translate-x-0',
         ].join(' ')}
       >
         {/* Chevron right */}
-        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M4 2l6 5-6 5" />
         </svg>
-        <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#d4e4cc]/80">
-          Habits
-        </span>
-        {/* Tree count badge */}
-        {forestTotals.treeCount > 0 && (
-          <span className="rounded-full bg-white/15 px-1.5 py-0.5 text-[9px] font-semibold text-white">
-            {forestTotals.treeCount}
-          </span>
-        )}
-        {witheredCount > 0 && (
-          <span className="rounded-full bg-amber-500/30 px-1.5 py-0.5 text-[9px] font-semibold text-amber-300">
-            ⚠
-          </span>
-        )}
       </button>
 
       <aside
@@ -683,9 +797,6 @@ function HabitPanel({
             <p className="mt-0.5 text-[10px] text-[#d4e4cc]/50">{sceneDateLabel}</p>
           </div>
           <div className="flex items-center gap-2 text-right">
-            <div className="rounded-full border border-white/15 bg-white/8 px-3 py-1.5 text-xs text-[#eff8ea]/80">
-              <span className="font-semibold text-white">{forestTotals.treeCount}</span> trees
-            </div>
             {witheredCount > 0 && (
               <div className="rounded-full border border-amber-400/40 bg-amber-900/25 px-2.5 py-1.5 text-[10px] font-semibold text-amber-300">
                 ⚠ {witheredCount}
@@ -706,26 +817,8 @@ function HabitPanel({
           </div>
         </div>
 
-        {/* ── Add habit form ── */}
-        <form className="mt-4 flex gap-2 shrink-0" onSubmit={handleSubmit} data-tutorial="habit-add-form">
-          <input
-            type="text"
-            value={draftHabit}
-            onChange={e => setDraftHabit(e.target.value)}
-            placeholder="New habit name…"
-            className="forest-input min-w-0 flex-1 rounded-2xl border border-white/15 bg-black/15 px-4 py-2.5 text-sm text-white placeholder:text-[#d8e7d2]/45"
-          />
-          <button
-            type="submit"
-            disabled={isPending || !draftHabit.trim()}
-            className="rounded-2xl bg-[#b8d890] px-4 py-2.5 text-sm font-semibold text-[#1e3018] transition hover:bg-[#cdeaa8] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Add
-          </button>
-        </form>
-
         {/* ── Tab bar ── */}
-        <div className="mt-3 flex gap-1 rounded-full border border-white/10 bg-black/12 p-1 shrink-0">
+        <div className="mt-3.5 flex gap-1 rounded-full border border-white/10 bg-black/12 p-1 shrink-0">
           {[
             { id: 'habits', label: 'Habits' },
             { id: 'stats', label: 'Stats' },
@@ -753,8 +846,36 @@ function HabitPanel({
           {/* HABITS TAB */}
           {activeTab === 'habits' && (
             <>
-              {/* View toggles (Trees / Areas) */}
-              <div className="mb-3 flex justify-end shrink-0">
+              {/* Toolbar: [+] on the left, [Trees | Areas] on the right */}
+              <div className="mb-3 flex items-center justify-between shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingHabit(prev => !prev)}
+                  data-tutorial="habit-add-form"
+                  className={`flex h-7 w-7 items-center justify-center rounded-full transition active:scale-95 bg-transparent border-0 ${
+                    isAddingHabit
+                      ? 'text-[#a8d878]'
+                      : 'text-white/75 hover:text-white'
+                  }`}
+                  title={isAddingHabit ? 'Close' : 'Add new habit'}
+                  aria-label="Add new habit"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className={`transition-transform duration-200 ${isAddingHabit ? 'rotate-45' : ''}`}
+                  >
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </button>
+
                 <div className="flex rounded-full border border-white/10 bg-black/10 p-0.5" data-tutorial="view-toggle">
                   <button
                     type="button"
@@ -768,6 +889,35 @@ function HabitPanel({
                   >Areas</button>
                 </div>
               </div>
+
+              {/* Collapsible inline Add Habit row */}
+              {isAddingHabit && (
+                <form
+                  className="mb-3 flex gap-2 shrink-0 animate-in fade-in duration-150"
+                  onSubmit={handleSubmit}
+                >
+                  <input
+                    type="text"
+                    autoFocus
+                    value={draftHabit}
+                    onChange={e => setDraftHabit(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Escape') {
+                        setIsAddingHabit(false)
+                      }
+                    }}
+                    placeholder="New habit name…"
+                    className="forest-input min-w-0 flex-1 rounded-xl border border-white/15 bg-black/25 px-3 py-1.5 text-xs text-white placeholder:text-[#d8e7d2]/45"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isPending || !draftHabit.trim()}
+                    className="rounded-xl bg-[#b8d890] px-3.5 py-1.5 text-xs font-semibold text-[#1e3018] transition hover:bg-[#cdeaa8] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                </form>
+              )}
 
               {/* Habit list */}
               <div className="flex flex-col gap-2.5 overflow-y-auto pr-0.5" data-tutorial="habit-list">
@@ -801,9 +951,6 @@ function HabitPanel({
           {/* SETTINGS TAB */}
           {activeTab === 'settings' && (
             <div className="flex flex-col gap-5 overflow-y-auto pr-1">
-              {/* Sun arc time-of-day slider */}
-              <SunArcSlider timeOfDay={timeOfDay} onSetTimeOfDay={onSetTimeOfDay} />
-
               {/* Forest seed */}
               <div>
                 <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#d4e4cc]/60">Forest Seed</p>
@@ -866,6 +1013,47 @@ function HabitPanel({
                   </div>
                 </div>
               )}
+
+              {/* Reset & Progress Deletion (Hold to confirm) */}
+              <div className="rounded-2xl border border-red-500/25 bg-red-950/20 p-3.5 mt-2">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <span className="text-xs">⚠️</span>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-red-400">
+                    Danger Zone
+                  </p>
+                </div>
+                <p className="text-[11px] text-[#e0cfcf]/70 leading-relaxed mb-3">
+                  Permanently delete all habits, trees, points, and placed decorations. This will reset your progress back to the beginning.
+                </p>
+                <HoldToDeleteButton
+                  onConfirm={onResetProgress}
+                  holdDuration={2000}
+                  label="Hold to Delete All Progress"
+                  confirmLabel="Progress Deleted! Resetting…"
+                />
+              </div>
+
+              {/* Privacy, Terms, and Local Storage info */}
+              <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-[#d4e4cc]/60 px-1">
+                <span>100% On-Device • Zero Trackers</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenLegal?.('privacy')}
+                    className="hover:text-white transition underline"
+                  >
+                    Privacy
+                  </button>
+                  <span>•</span>
+                  <button
+                    type="button"
+                    onClick={() => onOpenLegal?.('terms')}
+                    className="hover:text-white transition underline"
+                  >
+                    Terms
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

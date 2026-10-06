@@ -1,25 +1,20 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import { WORLD_RADIUS, WATER_LEVEL, sampleTerrainMeshHeight, mapToWorld, findDryLand } from '../lib/forest'
+import { WORLD_RADIUS, WATER_LEVEL, sampleTerrainMeshHeight, findDryLand } from '../lib/forest'
 
 const TERRAIN_Y_OFFSET = -0.18
 
-function pseudoRandom(seed) {
-  const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453
-  return value - Math.floor(value)
-}
-
 function getRandomForestPos() {
   const angle = Math.random() * Math.PI * 2
-  const radius = Math.sqrt(Math.random()) * WORLD_RADIUS
+  const radius = Math.sqrt(Math.random()) * 48
   return {
     x: Math.cos(angle) * radius,
     z: Math.sin(angle) * radius
   }
 }
 
-export function FallingLeaves({ palette, terrainSettings, globalSeed, worldShape, count = 100 }) {
+export function FallingLeaves({ palette, terrainSettings, globalSeed, count = 100 }) {
   const meshRef = useRef(null)
 
   const leaves = useMemo(() => {
@@ -71,10 +66,8 @@ export function FallingLeaves({ palette, terrainSettings, globalSeed, worldShape
 
       const scale = 0.6 + Math.sin(leaf.phase * 10) * 0.2
       
-      const mapped = mapToWorld(leaf.position.x, leaf.position.y, leaf.position.z, worldShape)
-      dummy.position.set(...mapped.position)
-      dummy.quaternion.copy(mapped.quaternion).multiply(new THREE.Quaternion().setFromEuler(leaf.rotation))
-      
+      dummy.position.copy(leaf.position)
+      dummy.quaternion.setFromEuler(leaf.rotation)
       dummy.scale.set(scale, scale, scale)
       dummy.updateMatrix()
       meshRef.current.setMatrixAt(i, dummy.matrix)
@@ -90,7 +83,7 @@ export function FallingLeaves({ palette, terrainSettings, globalSeed, worldShape
   )
 }
 
-export function Butterflies({ palette, terrainSettings, globalSeed, worldShape, count = 30 }) {
+export function Butterflies({ palette, terrainSettings, globalSeed, count = 30 }) {
   const meshRef = useRef(null)
 
   const butterflies = useMemo(() => {
@@ -132,8 +125,8 @@ export function Butterflies({ palette, terrainSettings, globalSeed, worldShape, 
 
       b.position.y += (targetY - b.position.y) * 2 * delta
 
-      // Keep inside forest
-      if (b.position.lengthSq() > WORLD_RADIUS * WORLD_RADIUS) {
+      // Keep inside island
+      if (b.position.lengthSq() > 52 * 52) {
         b.velocity.multiplyScalar(-1)
         b.position.addScaledVector(b.velocity, delta * 2)
       }
@@ -143,12 +136,6 @@ export function Butterflies({ palette, terrainSettings, globalSeed, worldShape, 
       dummy.lookAt(b.position.x + b.velocity.x, b.position.y, b.position.z + b.velocity.z)
       
       const flap = Math.max(0.1, Math.abs(Math.sin(time * 20 + b.phase)))
-      const localQuat = dummy.quaternion.clone()
-      
-      const mapped = mapToWorld(b.position.x, b.position.y, b.position.z, worldShape)
-      dummy.position.set(...mapped.position)
-      dummy.quaternion.copy(mapped.quaternion).multiply(localQuat)
-      
       dummy.scale.set(flap, 1, 1)
       dummy.updateMatrix()
       meshRef.current.setMatrixAt(i, dummy.matrix)
@@ -164,8 +151,62 @@ export function Butterflies({ palette, terrainSettings, globalSeed, worldShape, 
   )
 }
 
-export function FlockingBirds({ habits, allTrees, terrainSettings, globalSeed, worldShape }) {
+function getLandingPosition(habits, terrainSettings, globalSeed) {
+  const trees = []
+  for (const h of habits) {
+    for (const t of h.trees) {
+      trees.push({ tree: t, species: h.species })
+    }
+  }
+
+  // If there are trees: 50% chance land on tree, 50% chance land on ground.
+  // If no trees: 100% chance land on ground.
+  if (trees.length > 0 && Math.random() < 0.5) {
+    const { tree, species } = trees[Math.floor(Math.random() * trees.length)]
+    let tx = tree.x
+    let tz = tree.z
+    const rawY = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+    if (rawY < WATER_LEVEL + 0.3) {
+      const dryPos = findDryLand(tx, tz, terrainSettings, globalSeed)
+      tx = dryPos.x
+      tz = dryPos.z
+    }
+    const groundY = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+    const height = species.trunkHeight * tree.heightScale + 0.4
+    return new THREE.Vector3(tx, groundY + height, tz)
+  }
+
+  const pos = getRandomForestPos()
+  let gx = pos.x
+  let gz = pos.z
+  const rawGroundY = sampleTerrainMeshHeight(gx, gz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+  if (rawGroundY < WATER_LEVEL + 0.3) {
+    const dry = findDryLand(gx, gz, terrainSettings, globalSeed)
+    gx = dry.x
+    gz = dry.z
+  }
+  const groundY = sampleTerrainMeshHeight(gx, gz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+  return new THREE.Vector3(gx, groundY + 0.1, gz)
+}
+
+const BIRD_SPECIES = [
+  { name: 'Northern Cardinal', color: '#e5383b', size: 0.98 },     // Crimson red
+  { name: 'Eastern Bluebird', color: '#3a86ff', size: 0.90 },      // Radiant azure blue
+  { name: 'American Goldfinch', color: '#ffb703', size: 0.85 },    // Golden sunny yellow
+  { name: 'American Robin', color: '#fb8500', size: 1.02 },        // Rust orange
+  { name: 'Emerald Hummingbird', color: '#2a9d8f', size: 0.82 },   // Iridescent emerald
+  { name: 'Common Kingfisher', color: '#00b4d8', size: 0.92 },     // Azure teal
+  { name: 'Eurasian Bullfinch', color: '#ff4d6d', size: 0.94 },    // Rose pink
+  { name: 'House Sparrow', color: '#9c6644', size: 0.86 },         // Warm earth brown
+  { name: 'Mourning Dove', color: '#ddb892', size: 1.05 },         // Soft sand beige
+  { name: 'Baltimore Oriole', color: '#f77f00', size: 0.96 },      // Flame orange
+  { name: 'Indigo Bunting', color: '#4361ee', size: 0.88 },        // Deep indigo blue
+  { name: 'White Dove', color: '#f8f9fa', size: 1.08 },            // Pure snowy white
+]
+
+export function FlockingBirds({ habits, terrainSettings, globalSeed }) {
   const meshRef = useRef(null)
+  const colorsAssignedRef = useRef(false)
 
   const birdGeo = useMemo(() => {
     const geo = new THREE.BufferGeometry()
@@ -190,55 +231,65 @@ export function FlockingBirds({ habits, allTrees, terrainSettings, globalSeed, w
     return geo
   }, [])
 
-  const habitCount = habits.length
+  const totalTrees = habits.reduce((sum, h) => sum + h.trees.length, 0)
+  const count = Math.max(8, Math.min(24, totalTrees > 0 ? habits.length * 3 + 4 : 8))
 
   const birds = useMemo(() => {
-    const newBirds = []
-    habits.forEach((habit) => {
-      for (let i = 0; i < 3; i++) {
-        let pos
-        if (habit.trees.length > 0) {
-          const tree = habit.trees[Math.floor(Math.random() * habit.trees.length)]
-          // Mirror ForestScene: relocate to dry land if tree's stored position is underwater
-          let tx = tree.x
-          let tz = tree.z
-          const rawY = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-          if (rawY < WATER_LEVEL + 0.3) {
-            const dryPos = findDryLand(tx, tz, terrainSettings, globalSeed)
-            tx = dryPos.x
-            tz = dryPos.z
-          }
-          const groundY = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-          const height = habit.species.trunkHeight * tree.heightScale + 0.4
-          pos = new THREE.Vector3(tx, groundY + height, tz)
-        } else {
-          const randomPos = getRandomForestPos()
-          pos = new THREE.Vector3(randomPos.x, 10, randomPos.z)
-        }
-
-        newBirds.push({
-          position: pos,
-          velocity: new THREE.Vector3(1, 0, 0),
-          target: new THREE.Vector3(),
-          state: 'PERCHING', // start perched on the tree
-          timer: Math.random() * 8, // perch for random time initially
-          phase: Math.random() * Math.PI * 2
-        })
+    return Array.from({ length: count }, (_, i) => {
+      const pos = getLandingPosition(habits, terrainSettings, globalSeed)
+      const species = BIRD_SPECIES[i % BIRD_SPECIES.length]
+      return {
+        position: pos,
+        velocity: new THREE.Vector3(1, 0, 0),
+        target: new THREE.Vector3(),
+        state: 'PERCHING',
+        timer: Math.random() * 6,
+        phase: Math.random() * Math.PI * 2,
+        color: new THREE.Color(species.color),
+        size: species.size,
       }
     })
-    return newBirds
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [habitCount, terrainSettings])
+  }, [count, terrainSettings, globalSeed])
+
+  useEffect(() => {
+    colorsAssignedRef.current = false
+    if (meshRef.current) {
+      birds.forEach((b, i) => {
+        meshRef.current.setColorAt(i, b.color)
+      })
+      if (meshRef.current.instanceColor) {
+        meshRef.current.instanceColor.needsUpdate = true
+      }
+      if (meshRef.current.material) {
+        meshRef.current.material.needsUpdate = true
+      }
+      colorsAssignedRef.current = true
+    }
+  }, [birds])
 
   const dummy = useMemo(() => new THREE.Object3D(), [])
 
   useFrame((state, delta) => {
     if (!meshRef.current) return
     const time = state.clock.elapsedTime
-    const count = birds.length
+
+    if (!colorsAssignedRef.current) {
+      birds.forEach((b, i) => {
+        meshRef.current.setColorAt(i, b.color)
+      })
+      if (meshRef.current.instanceColor) {
+        meshRef.current.instanceColor.needsUpdate = true
+      }
+      if (meshRef.current.material) {
+        meshRef.current.material.needsUpdate = true
+      }
+      colorsAssignedRef.current = true
+    }
 
     for (let i = 0; i < count; i++) {
       const b = birds[i]
+      const bSize = b.size || 1
 
       dummy.scale.set(1, 1, 1)
 
@@ -246,32 +297,8 @@ export function FlockingBirds({ habits, allTrees, terrainSettings, globalSeed, w
         b.timer -= delta
         if (b.timer <= 0) {
           b.state = 'FLYING'
-          // Pick new target
-          if (habits && habits.length > 0) {
-            const habit = habits[Math.floor(Math.random() * habits.length)]
-            if (habit.trees.length > 0) {
-              const tree = habit.trees[Math.floor(Math.random() * habit.trees.length)]
-              // Mirror ForestScene: relocate to dry land if tree's stored position is underwater
-              let tx = tree.x
-              let tz = tree.z
-              const rawY = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-              if (rawY < WATER_LEVEL + 0.3) {
-                const dryPos = findDryLand(tx, tz, terrainSettings, globalSeed)
-                tx = dryPos.x
-                tz = dryPos.z
-              }
-              const groundY = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-              const height = habit.species.trunkHeight * tree.heightScale + 0.4
-              b.target.set(tx, groundY + height, tz)
-            } else {
-              const pos = getRandomForestPos()
-              b.target.set(pos.x, 8 + Math.random() * 8, pos.z)
-            }
-          } else {
-            const pos = getRandomForestPos()
-            b.target.set(pos.x, 8 + Math.random() * 8, pos.z)
-          }
-          // Take off upwards a bit
+          b.target.copy(getLandingPosition(habits, terrainSettings, globalSeed))
+          // Take off upwards
           b.velocity.set(Math.random() - 0.5, 1, Math.random() - 0.5).normalize().multiplyScalar(4)
         }
 
@@ -279,7 +306,7 @@ export function FlockingBirds({ habits, allTrees, terrainSettings, globalSeed, w
         dummy.position.copy(b.position)
         dummy.position.y += Math.sin(time * 5 + b.phase) * 0.02
         dummy.rotation.set(0, b.phase, 0)
-        dummy.scale.set(0.25, 1, 1) // Fold wings while perching
+        dummy.scale.set(0.25 * bSize, 1 * bSize, 1 * bSize) // Fold wings while perching
 
       } else {
         // FLYING
@@ -311,14 +338,9 @@ export function FlockingBirds({ habits, allTrees, terrainSettings, globalSeed, w
 
           // Simulate wings flapping by stretching/squishing the X axis
           const flap = 0.6 + 0.4 * Math.sin(time * 25 + b.phase)
-          dummy.scale.set(flap, 1, 1)
+          dummy.scale.set(flap * bSize, 1 * bSize, 1 * bSize)
         }
       }
-
-      const localQuat = dummy.quaternion.clone()
-      const mapped = mapToWorld(dummy.position.x, dummy.position.y, dummy.position.z, worldShape)
-      dummy.position.set(...mapped.position)
-      dummy.quaternion.copy(mapped.quaternion).multiply(localQuat)
 
       dummy.updateMatrix()
       meshRef.current.setMatrixAt(i, dummy.matrix)
@@ -328,17 +350,17 @@ export function FlockingBirds({ habits, allTrees, terrainSettings, globalSeed, w
 
   return (
     <instancedMesh ref={meshRef} args={[birdGeo, null, birds.length]} castShadow>
-      <meshStandardMaterial color="#1a1c1a" roughness={0.7} />
+      <meshStandardMaterial color="#ffffff" roughness={0.6} />
     </instancedMesh>
   )
 }
 
-export default function AmbientLife({ palette, terrainSettings, globalSeed, allTrees, habits, worldShape }) {
+export default function AmbientLife({ palette, terrainSettings, globalSeed, habits }) {
   return (
     <group>
-      <FallingLeaves palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} count={120} />
-      <Butterflies palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} count={40} />
-      <FlockingBirds habits={habits} allTrees={allTrees} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <FallingLeaves palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} count={120} />
+      <Butterflies palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} count={40} />
+      <FlockingBirds habits={habits} terrainSettings={terrainSettings} globalSeed={globalSeed} />
     </group>
   )
 }

@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Html, OrbitControls, PerspectiveCamera, Sky, Sparkles } from '@react-three/drei'
+import { Html, OrbitControls, PerspectiveCamera, Sparkles } from '@react-three/drei'
 import * as THREE from 'three'
 import Tree from './Tree'
 import AmbientLife from './AmbientLife'
@@ -11,7 +11,6 @@ import {
   getTerrainHeight,
   sampleTerrainMeshHeight,
   mapToWorld,
-  GLOBE_RADIUS,
   WATER_LEVEL,
   findDryLand,
   getHabitStreak,
@@ -19,6 +18,11 @@ import {
 } from '../lib/forest'
 
 const TERRAIN_Y_OFFSET = -0.18
+// Shared static geometries to prevent reinstantiation overhead
+const sharedDodecGeom = new THREE.DodecahedronGeometry(1, 0)
+const sharedIcoGeom = new THREE.IcosahedronGeometry(1, 0)
+const sharedOctaGeom = new THREE.OctahedronGeometry(1, 0)
+const sharedSphereGeom = new THREE.SphereGeometry(1, 6, 5)
 const TREE_GROUND_EMBED = 0.22
 const FENCE_RADIUS = WORLD_RADIUS + 4.5
 const FENCE_POST_COUNT = 56
@@ -28,9 +32,11 @@ function pseudoRandom(seed) {
   return value - Math.floor(value)
 }
 
-const ROCKS = Array.from({ length: 50 }, (_, index) => {
-  const x = (pseudoRandom(index * 11 + 5) * 2 - 1) * (WORLD_RADIUS + 2)
-  const z = (pseudoRandom(index * 13 + 7) * 2 - 1) * (WORLD_RADIUS + 2)
+const ROCKS = Array.from({ length: 70 }, (_, index) => {
+  const angle = pseudoRandom(index * 7 + 5) * Math.PI * 2
+  const radius = Math.sqrt(pseudoRandom(index * 13 + 7)) * 52.0
+  const x = Math.cos(angle) * radius
+  const z = Math.sin(angle) * radius
 
   return {
     id: `rock-${index}`,
@@ -46,98 +52,74 @@ const ROCKS = Array.from({ length: 50 }, (_, index) => {
   }
 })
 
-const BUSHES = Array.from({ length: 90 }, (_, index) => {
-  const angle  = pseudoRandom(index * 7  + 3) * Math.PI * 2
-  const radius = Math.sqrt(pseudoRandom(index * 11 + 9)) * (WORLD_RADIUS - 3)
+const BUSHES = Array.from({ length: 125 }, (_, index) => {
+  const angle = pseudoRandom(index * 7 + 3) * Math.PI * 2
+  const radius = Math.sqrt(pseudoRandom(index * 11 + 9)) * 48.0
   return {
-    id:       `bush-${index}`,
-    x:        Math.cos(angle) * radius,
-    z:        Math.sin(angle) * radius,
-    scale:    0.30 + pseudoRandom(index * 19) * 0.65,
-    type:     Math.floor(pseudoRandom(index * 29) * 3),
+    id: `bush-${index}`,
+    x: Math.cos(angle) * radius,
+    z: Math.sin(angle) * radius,
+    scale: 0.30 + pseudoRandom(index * 19) * 0.65,
+    type: Math.floor(pseudoRandom(index * 29) * 3),
     rotation: pseudoRandom(index * 37) * Math.PI * 2,
   }
 })
 
 
-const TIME_PRESETS = {
-  dawn: {
-    background: '#8fa9b3',
-    fog: '#b6cbd0',
-    ambient: 0.9,
-    sunIntensity: 1.25,
-    sunColor: '#ffdca8',
-    sunPosition: [18, 22, 6],
-    skyTint: '#c8e0da',
-    ground: '#667f54',
-    patch: '#96ab80',
-    rock: '#8f9382',
-    sparkle: '#fdf7d0',
-    cameraPosition: [36, 21, 36],
-  },
-  day: {
-    background: '#6ea3c2',
-    fog: '#a8cfe0',
-    ambient: 1.05,
-    sunIntensity: 1.45,
-    sunColor: '#fff1cc',
-    sunPosition: [22, 28, 10],
-    skyTint: '#bfdcf3',
-    ground: '#5f7e4b',
-    patch: '#95b27b',
-    rock: '#8c9288',
-    sparkle: '#e8f4d4',
-    cameraPosition: [35, 20, 35],
-  },
-  dusk: {
-    background: '#485a7a',
-    fog: '#7285a1',
-    ambient: 0.68,
-    sunIntensity: 0.98,
-    sunColor: '#ffb37d',
-    sunPosition: [-16, 16, 8],
-    skyTint: '#d5c0cf',
-    ground: '#536747',
-    patch: '#81946d',
-    rock: '#7b7d82',
-    sparkle: '#ffe5a6',
-    cameraPosition: [37, 22, 37],
-  },
+const PALETTE = {
+  background: '#5da9ef',
+  fog: '#b6e0ff',
+  ambient: 1.1,
+  sunIntensity: 1.5,
+  sunColor: '#fff5d8',
+  sunPosition: [22, 28, 10],
+  skyTint: '#d8efff',
+  ground: '#5f7e4b',
+  patch: '#95b27b',
+  rock: '#8c9288',
+  sparkle: '#e8f4d4',
+  cameraPosition: [45, 26, 45],
 }
 
-// ── Continuous palette interpolation ────────────────────────────────────────────
-function hexToRgb(h) {
-  const s = h.replace('#', '')
-  return [parseInt(s.slice(0,2),16), parseInt(s.slice(2,4),16), parseInt(s.slice(4,6),16)]
-}
-function lerpHex(a, b, t) {
-  const ra = hexToRgb(a), rb = hexToRgb(b)
-  return '#' + ra.map((v,i) => Math.round(v+(rb[i]-v)*t).toString(16).padStart(2,'0')).join('')
-}
-const lerpN = (a, b, t) => a + (b - a) * t
-const lerpV = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t)
+// ── Sky dome with vibrant blue gradient unaffected by fog ─────────────────────
+function SkyDome({ topColor = '#5da9ef', bottomColor = '#b6e0ff' }) {
+  const uniforms = useMemo(() => ({
+    topColor: { value: new THREE.Color(topColor) },
+    bottomColor: { value: new THREE.Color(bottomColor) },
+    offset: { value: 30 },
+    exponent: { value: 0.8 },
+  }), [topColor, bottomColor])
 
-const PALETTES = [TIME_PRESETS.dawn, TIME_PRESETS.day, TIME_PRESETS.dusk]
-
-function interpolatePalette(t) {
-  // t: 0 = dawn, 0.5 = day, 1 = dusk
-  const [from, to, lt] = t <= 0.5
-    ? [PALETTES[0], PALETTES[1], t * 2]
-    : [PALETTES[1], PALETTES[2], (t - 0.5) * 2]
-  return {
-    background:     lerpHex(from.background,     to.background,     lt),
-    fog:            lerpHex(from.fog,             to.fog,            lt),
-    ambient:        lerpN(from.ambient,           to.ambient,        lt),
-    sunIntensity:   lerpN(from.sunIntensity,      to.sunIntensity,   lt),
-    sunColor:       lerpHex(from.sunColor,        to.sunColor,       lt),
-    sunPosition:    lerpV(from.sunPosition,       to.sunPosition,    lt),
-    skyTint:        lerpHex(from.skyTint,         to.skyTint,        lt),
-    ground:         lerpHex(from.ground,          to.ground,         lt),
-    patch:          lerpHex(from.patch,           to.patch,          lt),
-    rock:           lerpHex(from.rock,            to.rock,           lt),
-    sparkle:        lerpHex(from.sparkle,         to.sparkle,        lt),
-    cameraPosition: lerpV(from.cameraPosition,    to.cameraPosition, lt),
-  }
+  return (
+    <mesh renderOrder={-2}>
+      <sphereGeometry args={[480, 32, 24]} />
+      <shaderMaterial
+        side={THREE.BackSide}
+        depthWrite={false}
+        fog={false}
+        uniforms={uniforms}
+        vertexShader={`
+          varying vec3 vWorldPosition;
+          void main() {
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPosition.xyz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `}
+        fragmentShader={`
+          uniform vec3 topColor;
+          uniform vec3 bottomColor;
+          uniform float offset;
+          uniform float exponent;
+          varying vec3 vWorldPosition;
+          void main() {
+            float h = normalize(vWorldPosition + vec3(0.0, offset, 0.0)).y;
+            gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+          }
+        `}
+      />
+    </mesh>
+  )
 }
 
 // ── Glowing sun disc in the sky ───────────────────────────────────────────────
@@ -145,7 +127,7 @@ function SunDisc({ sunPosition, sunColor }) {
   const pos = useMemo(() => {
     const v = new THREE.Vector3(sunPosition[0], sunPosition[1], sunPosition[2]).normalize()
     return [v.x * 420, v.y * 420, v.z * 420]
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sunPosition[0], sunPosition[1], sunPosition[2]])
 
   if (sunPosition[1] < 0) return null   // below horizon
@@ -179,11 +161,14 @@ function Ground({ palette, terrainSettings, globalSeed, worldShape, onPointerMov
     const positions = geometry.attributes.position
     const colors = new Float32Array(positions.count * 4)
 
-    // 5-zone height-based palette
-    const cBeach    = new THREE.Color('#cdb87a').convertSRGBToLinear()
-    const cShore    = new THREE.Color('#8e9968').convertSRGBToLinear()
-    const cLowland  = new THREE.Color(palette.ground).convertSRGBToLinear()
-    const cMeadow   = new THREE.Color(palette.patch).convertSRGBToLinear()
+    // Height-based palette for natural island, sandy beach, and submerged ocean floor
+    const cDeepBed = new THREE.Color('#133c4a').convertSRGBToLinear()
+    const cShallowBed = new THREE.Color('#38797c').convertSRGBToLinear()
+    const cWetSand = new THREE.Color('#b89f66').convertSRGBToLinear()
+    const cBeach = new THREE.Color('#d4bf7d').convertSRGBToLinear()
+    const cShore = new THREE.Color('#8fa46a').convertSRGBToLinear()
+    const cLowland = new THREE.Color(palette.ground).convertSRGBToLinear()
+    const cMeadow = new THREE.Color(palette.patch).convertSRGBToLinear()
     const cHighland = new THREE.Color(palette.rock).convertSRGBToLinear()
     const color = new THREE.Color()
 
@@ -195,51 +180,56 @@ function Ground({ palette, terrainSettings, globalSeed, worldShape, onPointerMov
       const mapped = mapToWorld(x, y, z, worldShape)
       positions.setXYZ(index, mapped.position[0], mapped.position[1], mapped.position[2])
 
-      const maxDist = worldShape === 'plane'
-        ? Math.max(Math.abs(x), Math.abs(z))
-        : Math.hypot(x, z)
-
+      const dist = Math.hypot(x, z)
       let alpha = 1.0
-      if (maxDist > WORLD_RADIUS + 2) {
-        alpha = Math.max(0, 1.0 - (maxDist - (WORLD_RADIUS + 2)) / 8)
+      if (dist > 76) {
+        alpha = Math.max(0, 1.0 - (dist - 76) / 10)
       }
 
-      // Approximate slope for rocky-steep blending
+      // Approximate slope for rocky cliffs
       const eps = 1.2
       const dy_dx = (getTerrainHeight(x + eps, z, terrainSettings, globalSeed) - y) / eps
       const dy_dz = (getTerrainHeight(x, z + eps, terrainSettings, globalSeed) - y) / eps
       const slope = Math.min(1, Math.sqrt(dy_dx * dy_dx + dy_dz * dy_dz) * 1.8)
 
-      // Per-vertex noise for organic variation
+      // Per-vertex noise for organic grass variation
       const nv = (Math.sin(x * 0.21 + 1.4) * Math.cos(z * 0.18 - 0.7)) * 0.18
 
-      // Height zone thresholds — narrow beach, rest is green
-      const wl = WATER_LEVEL
-      if (y < wl + 0.05) {
-        // Thin sandy strip right at water
-        color.copy(cBeach)
-      } else if (y < wl + 0.14) {
-        const t = Math.max(0, Math.min(1, (y - (wl + 0.05)) / 0.09))
+      // Height zone thresholds
+      const wl = WATER_LEVEL // -0.3
+      if (y < -2.4) {
+        color.copy(cDeepBed)
+      } else if (y < -0.85) {
+        const t = (y - (-2.4)) / 1.55
+        color.copy(cDeepBed).lerp(cShallowBed, t)
+      } else if (y < wl - 0.04) {
+        const t = (y - (-0.85)) / (wl - 0.04 - (-0.85))
+        color.copy(cShallowBed).lerp(cWetSand, t)
+      } else if (y < wl + 0.10) {
+        const t = Math.max(0, Math.min(1, (y - (wl - 0.04)) / 0.14))
+        color.copy(cWetSand).lerp(cBeach, t)
+      } else if (y < wl + 0.25) {
+        const t = Math.max(0, Math.min(1, (y - (wl + 0.10)) / 0.15))
         color.copy(cBeach).lerp(cShore, t)
-      } else if (y < wl + 0.28 + nv) {
-        const t = Math.max(0, Math.min(1, (y - (wl + 0.14)) / 0.14))
+      } else if (y < wl + 0.45 + nv) {
+        const t = Math.max(0, Math.min(1, (y - (wl + 0.25)) / 0.20))
         color.copy(cShore).lerp(cLowland, t)
-      } else if (y < 0.75 + nv) {
-        const t = Math.max(0, Math.min(1, (y - (wl + 0.28)) / 0.75))
+      } else if (y < 0.85 + nv) {
+        const t = Math.max(0, Math.min(1, (y - (wl + 0.45)) / 0.70))
         color.copy(cLowland).lerp(cMeadow, t)
-      } else if (y < 1.40 + nv) {
-        const t = Math.max(0, Math.min(1, (y - 0.75) / 0.65))
+      } else if (y < 1.45 + nv) {
+        const t = Math.max(0, Math.min(1, (y - 0.85) / 0.60))
         color.copy(cMeadow).lerp(cHighland, t * 0.85)
       } else {
         color.copy(cHighland)
       }
 
-      // Steep slopes → rocky regardless of height
-      if (slope > 0.25) {
-        color.lerp(cHighland, Math.min(1, (slope - 0.25) / 0.55))
+      // Steep slopes above water → rocky cliffs
+      if (slope > 0.30 && y > wl) {
+        color.lerp(cHighland, Math.min(1, (slope - 0.30) / 0.45))
       }
 
-      colors[index * 4]     = color.r
+      colors[index * 4] = color.r
       colors[index * 4 + 1] = color.g
       colors[index * 4 + 2] = color.b
       colors[index * 4 + 3] = alpha
@@ -273,119 +263,131 @@ function Ground({ palette, terrainSettings, globalSeed, worldShape, onPointerMov
   )
 }
 
-function Water({ worldShape }) {
-  const waterGeometry = useMemo(() => {
-    const size     = (WORLD_RADIUS + TERRAIN_PADDING) * 2
-    const segments = worldShape === 'plane' ? 80 : 64
-    const geometry = worldShape === 'plane'
-      ? new THREE.PlaneGeometry(size, size, segments, segments)
-      : new THREE.SphereGeometry(GLOBE_RADIUS + WATER_LEVEL, segments, segments, 0, Math.PI * 2, 0, Math.PI / 2)
+function Water({ palette }) {
+  const meshRef = useRef(null)
 
-    const positions = geometry.attributes.position
-    const colors    = new Float32Array(positions.count * 4)
+  const uniforms = useMemo(() => ({
+    uTime: { value: 0 },
+    uDeepWaterColor: { value: new THREE.Color('#135472') },
+    uMidWaterColor: { value: new THREE.Color('#218da7') },
+    uShallowWaterColor: { value: new THREE.Color('#3fc9bc') },
+    uSunPosition: { value: new THREE.Vector3(...(palette?.sunPosition || [22, 28, 10])).normalize() },
+    uSunColor: { value: new THREE.Color(palette?.sunColor || '#fff5d8') },
+    uFogColor: { value: new THREE.Color(palette?.fog || '#b6e0ff') },
+  }), [palette])
 
-    for (let i = 0; i < positions.count; i++) {
-      let x, z
-      if (worldShape === 'plane') {
-        x = positions.getX(i); z = positions.getY(i)
-      } else {
-        x = positions.getX(i); z = positions.getZ(i)
-      }
-      const maxDist = worldShape === 'plane'
-        ? Math.max(Math.abs(x), Math.abs(z)) : Math.hypot(x, z)
-
-      let alpha = 0.92
-      if (maxDist > WORLD_RADIUS + 2)
-        alpha = Math.max(0, 0.92 * (1.0 - (maxDist - (WORLD_RADIUS + 2)) / 8))
-
-      const depthFactor = Math.max(0, Math.min(1, 1 - maxDist / WORLD_RADIUS))
-      colors[i * 4]     = 0.06 + depthFactor * 0.04
-      colors[i * 4 + 1] = 0.20 + depthFactor * 0.06
-      colors[i * 4 + 2] = 0.42 + depthFactor * 0.08
-      colors[i * 4 + 3] = alpha
+  useFrame(({ clock }) => {
+    if (meshRef.current?.material?.uniforms) {
+      meshRef.current.material.uniforms.uTime.value = clock.elapsedTime
     }
+  })
 
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
-    return geometry
-  }, [worldShape])
+  const waterGeometry = useMemo(() => {
+    return new THREE.CircleGeometry(560, 96)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      waterGeometry.dispose()
+    }
+  }, [waterGeometry])
 
   return (
     <mesh
-      position={worldShape === 'plane' ? [0, WATER_LEVEL + TERRAIN_Y_OFFSET, 0] : [0, -GLOBE_RADIUS + TERRAIN_Y_OFFSET, 0]}
-      rotation={worldShape === 'plane' ? [-Math.PI / 2, 0, 0] : [0, 0, 0]}
+      ref={meshRef}
       geometry={waterGeometry}
+      position={[0, WATER_LEVEL + TERRAIN_Y_OFFSET, 0]}
+      rotation={[-Math.PI / 2, 0, 0]}
       receiveShadow
     >
-      <meshStandardMaterial
-        vertexColors={true}
-        transparent={true}
-        roughness={0.04}
-        metalness={0.30}
-        envMapIntensity={1.4}
-        alphaTest={0.01}
+      <shaderMaterial
+        transparent
+        depthWrite={false}
+        uniforms={uniforms}
+        vertexShader={`
+          varying vec3 vWorldPosition;
+          varying vec3 vNormal;
+          varying vec2 vUv;
+          uniform float uTime;
+
+          void main() {
+            vUv = uv;
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+
+            // Subtle, calm surface swell
+            float w1 = sin(worldPos.x * 0.08 + uTime * 0.7) * cos(worldPos.z * 0.08 + uTime * 0.6) * 0.035;
+            float w2 = sin(worldPos.x * 0.16 - uTime * 0.9 + worldPos.z * 0.12) * 0.015;
+            float totalWave = w1 + w2;
+
+            worldPos.y += totalWave;
+            vWorldPosition = worldPos.xyz;
+
+            float dw_dx = cos(worldPos.x * 0.08 + uTime * 0.7) * cos(worldPos.z * 0.08 + uTime * 0.6) * 0.08 * 0.035;
+            float dw_dz = -sin(worldPos.x * 0.08 + uTime * 0.7) * sin(worldPos.z * 0.08 + uTime * 0.6) * 0.08 * 0.035;
+            vNormal = normalize(vec3(-dw_dx, 1.0, -dw_dz));
+
+            gl_Position = projectionMatrix * viewMatrix * worldPos;
+          }
+        `}
+        fragmentShader={`
+          uniform vec3 uDeepWaterColor;
+          uniform vec3 uMidWaterColor;
+          uniform vec3 uShallowWaterColor;
+          uniform vec3 uSunPosition;
+          uniform vec3 uSunColor;
+          uniform vec3 uFogColor;
+          uniform float uTime;
+
+          varying vec3 vWorldPosition;
+          varying vec3 vNormal;
+          varying vec2 vUv;
+
+          void main() {
+            float dist = length(vWorldPosition.xz);
+
+            // Smooth depth gradient: crystal turquoise in shallows/inland -> mid azure -> deep open ocean
+            vec3 waterColor = uDeepWaterColor;
+            float alpha = 0.94;
+
+            if (dist < 54.0) {
+              waterColor = uShallowWaterColor;
+              alpha = 0.80;
+            } else if (dist < 78.0) {
+              float t = (dist - 54.0) / 24.0;
+              waterColor = mix(uShallowWaterColor, uMidWaterColor, t);
+              alpha = mix(0.80, 0.91, t);
+            } else if (dist < 120.0) {
+              float t = (dist - 78.0) / 42.0;
+              waterColor = mix(uMidWaterColor, uDeepWaterColor, t);
+              alpha = mix(0.91, 0.95, t);
+            }
+
+            // Gentle sun reflection specular highlight
+            vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+            vec3 lightDir = normalize(uSunPosition);
+            vec3 halfDir = normalize(lightDir + viewDir);
+            float spec = pow(max(dot(vNormal, halfDir), 0.0), 38.0);
+            waterColor += uSunColor * spec * 0.5;
+
+            // Delicate surface caustics shimmer
+            float shimmer = sin(vWorldPosition.x * 1.2 + uTime * 1.1) * cos(vWorldPosition.z * 1.2 - uTime * 0.9);
+            if (shimmer > 0.80) {
+              waterColor += vec3(0.06, 0.09, 0.11) * ((shimmer - 0.80) * 3.0);
+            }
+
+            // Atmospheric horizon fog blend
+            if (dist > 160.0) {
+              float fogFactor = smoothstep(160.0, 420.0, dist);
+              waterColor = mix(waterColor, uFogColor, fogFactor * 0.95);
+              alpha = mix(alpha, 1.0, fogFactor);
+            }
+
+            gl_FragColor = vec4(waterColor, alpha);
+          }
+        `}
       />
     </mesh>
   )
-}
-
-// Expanding ring ripples on the water surface
-function WaterRipples({ worldShape }) {
-  const groupRef   = useRef(null)
-  const active     = useRef([])
-  const nextSpawn  = useRef(1.0)
-
-  useFrame(({ clock }) => {
-    if (worldShape !== 'plane' || !groupRef.current) return
-    const t = clock.elapsedTime
-
-    // Spawn a new ripple
-    if (t >= nextSpawn.current) {
-      const angle = Math.random() * Math.PI * 2
-      const dist  = Math.random() * WORLD_RADIUS * 0.70
-      const cx    = Math.cos(angle) * dist
-      const cz    = Math.sin(angle) * dist
-
-      const duration  = 3.0 + Math.random() * 2.5
-      const maxRadius = 1.5 + Math.random() * 2.0
-
-      // Use a thin ring: inner=0.82, outer=1.0 of scale
-      const geo = new THREE.RingGeometry(0.82, 1.0, 56)
-      const mat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(0.55, 0.78, 0.92),
-        transparent: true,
-        opacity: 0.55,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      })
-      const mesh = new THREE.Mesh(geo, mat)
-      // Rings lie flat on the water plane
-      mesh.rotation.x = -Math.PI / 2
-      mesh.position.set(cx, WATER_LEVEL + TERRAIN_Y_OFFSET + 0.04, cz)
-      groupRef.current.add(mesh)
-
-      active.current.push({ mesh, mat, startTime: t, duration, maxRadius })
-      nextSpawn.current = t + 1.8 + Math.random() * 2.5
-    }
-
-    // Update each ring
-    active.current = active.current.filter(rp => {
-      const elapsed  = t - rp.startTime
-      if (elapsed >= rp.duration) {
-        groupRef.current?.remove(rp.mesh)
-        rp.mesh.geometry.dispose()
-        rp.mat.dispose()
-        return false
-      }
-      const progress    = elapsed / rp.duration          // 0 → 1
-      const scale       = 0.05 + progress * rp.maxRadius  // starts tiny
-      rp.mesh.scale.set(scale, scale, 1)
-      rp.mat.opacity    = (1 - progress) * 0.55
-      return true
-    })
-  })
-
-  if (worldShape !== 'plane') return null
-  return <group ref={groupRef} />
 }
 
 function RockModel({ type, palette }) {
@@ -395,12 +397,10 @@ function RockModel({ type, palette }) {
     // Wide, flat rock outcrop
     return (
       <group>
-        <mesh castShadow receiveShadow position={[0, -0.6, 0]} scale={[1.6, 1.2, 1.4]}>
-          <dodecahedronGeometry args={[1, 0]} />
+        <mesh castShadow receiveShadow position={[0, -0.6, 0]} scale={[1.6, 1.2, 1.4]} geometry={sharedDodecGeom}>
           {material}
         </mesh>
-        <mesh castShadow receiveShadow position={[0.8, -0.8, -0.5]} scale={[1.0, 1.0, 1.1]}>
-          <icosahedronGeometry args={[1, 0]} />
+        <mesh castShadow receiveShadow position={[0.8, -0.8, -0.5]} scale={[1.0, 1.0, 1.1]} geometry={sharedIcoGeom}>
           {material}
         </mesh>
       </group>
@@ -411,16 +411,13 @@ function RockModel({ type, palette }) {
     // Cluster of jagged rocks
     return (
       <group>
-        <mesh castShadow receiveShadow position={[0, -0.5, 0]} scale={[0.9, 1.5, 0.9]} rotation={[0.2, 0.4, 0.1]}>
-          <icosahedronGeometry args={[1, 0]} />
+        <mesh castShadow receiveShadow position={[0, -0.5, 0]} scale={[0.9, 1.5, 0.9]} rotation={[0.2, 0.4, 0.1]} geometry={sharedIcoGeom}>
           {material}
         </mesh>
-        <mesh castShadow receiveShadow position={[0.7, -0.8, 0.4]} scale={[0.7, 1.2, 0.8]} rotation={[-0.3, 0.1, -0.2]}>
-          <octahedronGeometry args={[1, 0]} />
+        <mesh castShadow receiveShadow position={[0.7, -0.8, 0.4]} scale={[0.7, 1.2, 0.8]} rotation={[-0.3, 0.1, -0.2]} geometry={sharedOctaGeom}>
           {material}
         </mesh>
-        <mesh castShadow receiveShadow position={[-0.6, -0.7, -0.3]} scale={[0.8, 1.0, 0.7]} rotation={[0.1, -0.4, 0.2]}>
-          <dodecahedronGeometry args={[1, 0]} />
+        <mesh castShadow receiveShadow position={[-0.6, -0.7, -0.3]} scale={[0.8, 1.0, 0.7]} rotation={[0.1, -0.4, 0.2]} geometry={sharedDodecGeom}>
           {material}
         </mesh>
       </group>
@@ -430,12 +427,10 @@ function RockModel({ type, palette }) {
   // Blocky, massive buried boulder
   return (
     <group>
-      <mesh castShadow receiveShadow position={[0, -1.0, 0]} scale={[1.4, 1.8, 1.3]} rotation={[0.4, 0, 0.3]}>
-        <octahedronGeometry args={[1, 0]} />
+      <mesh castShadow receiveShadow position={[0, -1.0, 0]} scale={[1.4, 1.8, 1.3]} rotation={[0.4, 0, 0.3]} geometry={sharedOctaGeom}>
         {material}
       </mesh>
-      <mesh castShadow receiveShadow position={[-0.5, -0.8, 0.6]} scale={[1.1, 1.4, 1.1]} rotation={[0, 0.6, 0]}>
-        <dodecahedronGeometry args={[1, 0]} />
+      <mesh castShadow receiveShadow position={[-0.5, -0.8, 0.6]} scale={[1.1, 1.4, 1.1]} rotation={[0, 0.6, 0]} geometry={sharedDodecGeom}>
         {material}
       </mesh>
     </group>
@@ -449,48 +444,28 @@ function BushModel({ type, palette }) {
   if (type === 0) {
     return (
       <group>
-        <mesh castShadow receiveShadow position={[0, 0.48, 0]} scale={[1, 0.88, 1]}>
-          <sphereGeometry args={[0.68, 6, 5]} />{outer}
-        </mesh>
-        <mesh castShadow receiveShadow position={[0.38, 0.30, 0.22]} scale={[0.6, 0.6, 0.6]}>
-          <sphereGeometry args={[0.68, 5, 4]} />{inner}
-        </mesh>
-        <mesh castShadow receiveShadow position={[-0.32, 0.26, -0.20]} scale={[0.55, 0.55, 0.55]}>
-          <sphereGeometry args={[0.68, 5, 4]} />{outer}
-        </mesh>
+        <mesh castShadow receiveShadow position={[0, 0.48, 0]} scale={[0.68, 0.68 * 0.88, 0.68]} geometry={sharedSphereGeom}>{outer}</mesh>
+        <mesh castShadow receiveShadow position={[0.38, 0.30, 0.22]} scale={[0.68 * 0.6, 0.68 * 0.6, 0.68 * 0.6]} geometry={sharedSphereGeom}>{inner}</mesh>
+        <mesh castShadow receiveShadow position={[-0.32, 0.26, -0.20]} scale={[0.68 * 0.55, 0.68 * 0.55, 0.68 * 0.55]} geometry={sharedSphereGeom}>{outer}</mesh>
       </group>
     )
   }
   if (type === 1) {
     return (
       <group>
-        <mesh castShadow receiveShadow position={[0, 0.55, 0]} scale={[0.78, 1.18, 0.78]}>
-          <sphereGeometry args={[0.62, 6, 5]} />{inner}
-        </mesh>
-        <mesh castShadow receiveShadow position={[0.40, 0.78, 0.10]}>
-          <sphereGeometry args={[0.42, 5, 4]} />{outer}
-        </mesh>
-        <mesh castShadow receiveShadow position={[-0.34, 0.68, -0.28]}>
-          <sphereGeometry args={[0.38, 5, 4]} />{outer}
-        </mesh>
-        <mesh castShadow receiveShadow position={[0.08, 1.08, -0.10]}>
-          <sphereGeometry args={[0.32, 5, 4]} />{outer}
-        </mesh>
+        <mesh castShadow receiveShadow position={[0, 0.55, 0]} scale={[0.62 * 0.78, 0.62 * 1.18, 0.62 * 0.78]} geometry={sharedSphereGeom}>{inner}</mesh>
+        <mesh castShadow receiveShadow position={[0.40, 0.78, 0.10]} scale={[0.42, 0.42, 0.42]} geometry={sharedSphereGeom}>{outer}</mesh>
+        <mesh castShadow receiveShadow position={[-0.34, 0.68, -0.28]} scale={[0.38, 0.38, 0.38]} geometry={sharedSphereGeom}>{outer}</mesh>
+        <mesh castShadow receiveShadow position={[0.08, 1.08, -0.10]} scale={[0.32, 0.32, 0.32]} geometry={sharedSphereGeom}>{outer}</mesh>
       </group>
     )
   }
   // type 2 – low spreading
   return (
     <group>
-      <mesh castShadow receiveShadow position={[0, 0.22, 0]} scale={[1.4, 0.45, 1.4]}>
-        <sphereGeometry args={[0.68, 6, 4]} />{outer}
-      </mesh>
-      <mesh castShadow receiveShadow position={[0.58, 0.18, 0.30]} scale={[0.9, 0.38, 0.9]}>
-        <sphereGeometry args={[0.68, 5, 4]} />{inner}
-      </mesh>
-      <mesh castShadow receiveShadow position={[-0.50, 0.18, -0.38]} scale={[0.85, 0.38, 0.85]}>
-        <sphereGeometry args={[0.68, 5, 4]} />{outer}
-      </mesh>
+      <mesh castShadow receiveShadow position={[0, 0.22, 0]} scale={[0.68 * 1.4, 0.68 * 0.45, 0.68 * 1.4]} geometry={sharedSphereGeom}>{outer}</mesh>
+      <mesh castShadow receiveShadow position={[0.58, 0.18, 0.30]} scale={[0.68 * 0.9, 0.68 * 0.38, 0.68 * 0.9]} geometry={sharedSphereGeom}>{inner}</mesh>
+      <mesh castShadow receiveShadow position={[-0.50, 0.18, -0.38]} scale={[0.68 * 0.85, 0.68 * 0.38, 0.68 * 0.85]} geometry={sharedSphereGeom}>{outer}</mesh>
     </group>
   )
 }
@@ -501,11 +476,11 @@ function Bushes({ palette, terrainSettings, globalSeed, worldShape }) {
       {BUSHES.map((bush) => {
         let bx = bush.x
         let bz = bush.z
-        let y  = sampleTerrainMeshHeight(bx, bz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+        let y = sampleTerrainMeshHeight(bx, bz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
         if (y < WATER_LEVEL + 0.15) {
           const dry = findDryLand(bx, bz, terrainSettings, globalSeed)
           bx = dry.x; bz = dry.z
-          y  = sampleTerrainMeshHeight(bx, bz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+          y = sampleTerrainMeshHeight(bx, bz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
         }
         const mapped = mapToWorld(bx, y, bz, worldShape)
         return (
@@ -528,12 +503,12 @@ function Rocks({ palette, terrainSettings, globalSeed, worldShape }) {
         let rz = rock.z
         let y = sampleTerrainMeshHeight(rx, rz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
         if (y < WATER_LEVEL + 0.2) {
-           const dryPos = findDryLand(rx, rz, terrainSettings, globalSeed)
-           rx = dryPos.x
-           rz = dryPos.z
-           y = sampleTerrainMeshHeight(rx, rz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
+          const dryPos = findDryLand(rx, rz, terrainSettings, globalSeed)
+          rx = dryPos.x
+          rz = dryPos.z
+          y = sampleTerrainMeshHeight(rx, rz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
         }
-        
+
         const mapped = mapToWorld(rx, y, rz, worldShape)
 
         return (
@@ -560,10 +535,12 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
     const dummy = new THREE.Object3D()
     const mats = []
 
-    for (let f = 0; f < 22; f++) {
-      const fieldRadius = 5 + pseudoRandom(f * 11) * 10
-      const fx = (pseudoRandom(f * 13) * 2 - 1) * (WORLD_RADIUS + 2)
-      const fz = (pseudoRandom(f * 17) * 2 - 1) * (WORLD_RADIUS + 2)
+    for (let f = 0; f < 36; f++) {
+      const fieldRadius = 4 + pseudoRandom(f * 11) * 8
+      const fieldAngle = pseudoRandom(f * 13) * Math.PI * 2
+      const fieldDist = Math.sqrt(pseudoRandom(f * 17)) * 42.0
+      const fx = Math.cos(fieldAngle) * fieldDist
+      const fz = Math.sin(fieldAngle) * fieldDist
 
       const bladeCount = Math.floor(fieldRadius * fieldRadius * 12)
 
@@ -575,10 +552,10 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
         const x = fx + Math.cos(bAngle) * bRad
         const z = fz + Math.sin(bAngle) * bRad
 
-        if (Math.abs(x) > WORLD_RADIUS + 3 || Math.abs(z) > WORLD_RADIUS + 3) continue;
+        if (Math.hypot(x, z) > 52) continue;
 
         let y = sampleTerrainMeshHeight(x, z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
-        
+
         if (y < WATER_LEVEL + 0.3) continue;
 
         const h = 0.15 + pseudoRandom(f * 4000 + b * 13) * 0.35
@@ -590,7 +567,7 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
         const mapped = mapToWorld(x, y + h * 0.5, z, worldShape)
         dummy.position.set(...mapped.position)
         dummy.quaternion.copy(mapped.quaternion)
-        
+
         const localQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz))
         dummy.quaternion.multiply(localQuat)
 
@@ -609,7 +586,7 @@ function WildGrass({ palette, terrainSettings, globalSeed, worldShape }) {
         meshRef.current.setMatrixAt(i, matrix)
       })
       meshRef.current.instanceMatrix.needsUpdate = true
-      
+
       // CRITICAL: Compute bounding volumes so frustum culling works correctly
       // when zooming in or looking away from the origin.
       meshRef.current.computeBoundingSphere()
@@ -668,7 +645,7 @@ function EdgeFence({ palette, terrainSettings, globalSeed, worldShape }) {
         const dz = next.z - post.z
         const segmentLength = Math.hypot(dx, dz)
         const segmentYaw = Math.atan2(dz, dx)
-        
+
         const postY = sampleTerrainMeshHeight(post.x, post.z, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
         const railY = sampleTerrainMeshHeight(midX, midZ, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
 
@@ -686,7 +663,7 @@ function EdgeFence({ palette, terrainSettings, globalSeed, worldShape }) {
                 <meshStandardMaterial color="#6f5b43" roughness={0.95} />
               </mesh>
             </group>
-            
+
             <group position={railMapped.position} quaternion={railQuat}>
               <mesh castShadow receiveShadow position={[0, 1.05, 0]}>
                 <boxGeometry args={[segmentLength * 0.92, 0.12, 0.12]} />
@@ -744,7 +721,7 @@ function AnimatedCampfire({ isPreview, poleMat, fireMat }) {
         const p = smokeParticles[i]
         child.position.y += p.speed
         child.position.x += Math.sin(t * 2 + p.phase) * 0.003
-        
+
         // fade by shrinking
         const life = 1 - (child.position.y - 0.2) / 1.5
         if (life > 0) {
@@ -767,7 +744,7 @@ function AnimatedCampfire({ isPreview, poleMat, fireMat }) {
         <dodecahedronGeometry args={[0.3, 0]} />
         {poleMat}
       </mesh>
-      
+
       {/* Fire */}
       <mesh ref={fireRef} position={[0, 0.2, 0]}>
         <coneGeometry args={[0.2, 0.4, 4]} />
@@ -797,7 +774,7 @@ function AnimatedCampfire({ isPreview, poleMat, fireMat }) {
 function Tent({ position, rotation, color, isPreview }) {
   const transparent = isPreview
   const opacity = isPreview ? 0.6 : 1
-  
+
   const tentMat = <meshStandardMaterial color={color} roughness={0.9} flatShading transparent={transparent} opacity={opacity} />
   const darkMat = <meshBasicMaterial color="#1f1f1f" transparent={transparent} opacity={opacity} />
   const poleMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={transparent} opacity={opacity} />
@@ -848,7 +825,7 @@ function Campsite({ isPreview }) {
 
   const fireMat = <meshBasicMaterial color="#ff9900" transparent={transparent} opacity={opacity} />
   const poleMat = <meshStandardMaterial color="#444" roughness={0.9} flatShading transparent={transparent} opacity={opacity} />
-  
+
   return (
     <group>
       <AnimatedCampfire isPreview={isPreview} poleMat={poleMat} fireMat={fireMat} />
@@ -861,7 +838,7 @@ function Campsite({ isPreview }) {
 function PicnicTable({ isPreview }) {
   const opacity = isPreview ? 0.6 : 1
   const woodMat = <meshStandardMaterial color="#6a4b35" roughness={0.9} flatShading transparent={isPreview} opacity={opacity} />
-  
+
   return (
     <group>
       {/* Table Top */}
@@ -997,7 +974,7 @@ function Gazebo({ isPreview }) {
         <cylinderGeometry args={[2.2, 2.2, 0.2, 8]} />
         {floorMat}
       </mesh>
-      
+
       {pillars}
 
       {/* Roof Base */}
@@ -1029,7 +1006,7 @@ function Windmill({ isPreview }) {
   const stoneMat = <meshStandardMaterial color="#888" roughness={0.9} transparent={isPreview} opacity={opacity} flatShading />
   const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
   const sailMat = <meshStandardMaterial color="#e0dfd5" roughness={1.0} transparent={isPreview} opacity={opacity} side={THREE.DoubleSide} />
-  
+
   const sailsRef = useRef(null)
 
   useFrame((state, delta) => {
@@ -1112,16 +1089,16 @@ function LogSeat({ isPreview }) {
   return (
     <group>
       {/* Supports */}
-      <mesh castShadow={!isPreview} position={[-0.4, 0.1, 0]} rotation={[Math.PI/2, 0, 0]}>
+      <mesh castShadow={!isPreview} position={[-0.4, 0.1, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[0.1, 0.1, 0.4, 6]} />
         {woodMat}
       </mesh>
-      <mesh castShadow={!isPreview} position={[0.4, 0.1, 0]} rotation={[Math.PI/2, 0, 0]}>
+      <mesh castShadow={!isPreview} position={[0.4, 0.1, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[0.1, 0.1, 0.4, 6]} />
         {woodMat}
       </mesh>
       {/* Main Log */}
-      <mesh castShadow={!isPreview} position={[0, 0.25, 0]} rotation={[0, 0, Math.PI/2]}>
+      <mesh castShadow={!isPreview} position={[0, 0.25, 0]} rotation={[0, 0, Math.PI / 2]}>
         <cylinderGeometry args={[0.2, 0.2, 1.2, 8]} />
         {woodMat}
       </mesh>
@@ -1179,11 +1156,11 @@ function Well({ isPreview }) {
         <boxGeometry args={[0.1, 1.6, 0.1]} />
         {woodMat}
       </mesh>
-      <mesh castShadow={!isPreview} position={[0, 2.1, 0]} rotation={[0, Math.PI/4, 0]}>
+      <mesh castShadow={!isPreview} position={[0, 2.1, 0]} rotation={[0, Math.PI / 4, 0]}>
         <coneGeometry args={[0.9, 0.6, 4]} />
         {roofMat}
       </mesh>
-      <mesh position={[0, 1.4, 0]} rotation={[0, 0, Math.PI/2]}>
+      <mesh position={[0, 1.4, 0]} rotation={[0, 0, Math.PI / 2]}>
         <cylinderGeometry args={[0.05, 0.05, 1.2, 6]} />
         {woodMat}
       </mesh>
@@ -1195,7 +1172,7 @@ function Watchtower({ isPreview }) {
   const opacity = isPreview ? 0.6 : 1
   const woodMat = <meshStandardMaterial color="#4a3b2c" roughness={0.9} transparent={isPreview} opacity={opacity} />
   const floorMat = <meshStandardMaterial color="#5a422b" roughness={1.0} transparent={isPreview} opacity={opacity} />
-  
+
   return (
     <group>
       <mesh castShadow={!isPreview} position={[-0.8, 2.5, -0.8]} rotation={[-0.05, 0, 0.05]}><cylinderGeometry args={[0.1, 0.15, 5, 4]} />{woodMat}</mesh>
@@ -1219,7 +1196,7 @@ function Watchtower({ isPreview }) {
 function GiantCrystal({ isPreview }) {
   const opacity = isPreview ? 0.4 : 0.85
   const crystalGlowMat = <meshBasicMaterial color="#d48fff" transparent opacity={isPreview ? 0.2 : 0.4} />
-  
+
   const crystalRef = useRef(null)
   const lightRef = useRef(null)
 
@@ -1259,6 +1236,9 @@ function GiantCrystal({ isPreview }) {
     </group>
   )
 }
+
+
+
 
 function MushroomPatch({ isPreview }) {
   const opacity = isPreview ? 0.6 : 1
@@ -1317,7 +1297,7 @@ function Hammock({ isPreview }) {
     <group>
       <mesh castShadow={!isPreview} position={[-1.2, 0.8, 0]} rotation={[0, 0, -0.2]}><cylinderGeometry args={[0.06, 0.08, 1.6, 5]} />{woodMat}</mesh>
       <mesh castShadow={!isPreview} position={[1.2, 0.8, 0]} rotation={[0, 0, 0.2]}><cylinderGeometry args={[0.06, 0.08, 1.6, 5]} />{woodMat}</mesh>
-      <mesh position={[0, 0.6, 0]} scale={[1.8, 0.4, 0.8]}><sphereGeometry args={[0.5, 16, 8, 0, Math.PI * 2, Math.PI/2, Math.PI/2]} />{fabricMat}</mesh>
+      <mesh position={[0, 0.6, 0]} scale={[1.8, 0.4, 0.8]}><sphereGeometry args={[0.5, 16, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]} />{fabricMat}</mesh>
       <mesh position={[-1.05, 0.95, 0]} rotation={[0, 0, -1.2]}><cylinderGeometry args={[0.02, 0.02, 0.4]} />{ropeMat}</mesh>
       <mesh position={[1.05, 0.95, 0]} rotation={[0, 0, 1.2]}><cylinderGeometry args={[0.02, 0.02, 0.4]} />{ropeMat}</mesh>
     </group>
@@ -1367,18 +1347,18 @@ function ItemWrapper({ fixedPos, isPreview, previewPosRef, placementRotationRef,
   // Calculate static position once for placed items
   const staticPos = useMemo(() => {
     if (isPreview || !fixedPos) return { position: [0, -1000, 0], quaternion: new THREE.Quaternion() }
-    
+
     let tx = fixedPos.x
     let tz = fixedPos.z
     let rot = fixedPos.rotation || 0
-    
+
     let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
     const mapped = mapToWorld(tx, ty, tz, worldShape)
-    
+
     // Apply item Y rotation
     const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
     mapped.quaternion.multiply(yRotQuat)
-    
+
     return mapped
   }, [fixedPos, isPreview, terrainSettings, globalSeed, worldShape])
 
@@ -1394,23 +1374,23 @@ function ItemWrapper({ fixedPos, isPreview, previewPosRef, placementRotationRef,
       let tx = previewPosRef.current.x
       let tz = previewPosRef.current.z
       let rot = placementRotationRef?.current || 0
-      
+
       let ty = sampleTerrainMeshHeight(tx, tz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET
       const mapped = mapToWorld(tx, ty, tz, worldShape)
-      
+
       // Apply placement Y rotation
       const yRotQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
       mapped.quaternion.multiply(yRotQuat)
-      
+
       groupRef.current.position.set(mapped.position[0], mapped.position[1], mapped.position[2])
       groupRef.current.quaternion.copy(mapped.quaternion)
     }
   })
 
   return (
-    <group 
-      ref={groupRef} 
-      position={staticPos.position} 
+    <group
+      ref={groupRef}
+      position={staticPos.position}
       quaternion={staticPos.quaternion}
       onPointerOver={(e) => {
         if (!isPreview && !placementItem && onRemoveItem) {
@@ -1451,7 +1431,7 @@ function ItemWrapper({ fixedPos, isPreview, previewPosRef, placementRotationRef,
 
 function ShopItemRender({ item, terrainSettings, globalSeed, worldShape, isPreview, previewPosRef, placementRotationRef, keysDownRef, placementItem, onRemoveItem }) {
   const props = { isPreview }
-  
+
   let content = null
   switch (item.type) {
     case 'stone_path': content = <StonePath {...props} />; break;
@@ -1476,16 +1456,16 @@ function ShopItemRender({ item, terrainSettings, globalSeed, worldShape, isPrevi
   }
 
   return (
-    <ItemWrapper 
-      fixedPos={item} 
-      isPreview={isPreview} 
-      previewPosRef={previewPosRef} 
+    <ItemWrapper
+      fixedPos={item}
+      isPreview={isPreview}
+      previewPosRef={previewPosRef}
       placementRotationRef={placementRotationRef}
       keysDownRef={keysDownRef}
       placementItem={placementItem}
       onRemoveItem={onRemoveItem}
-      terrainSettings={terrainSettings} 
-      globalSeed={globalSeed} 
+      terrainSettings={terrainSettings}
+      globalSeed={globalSeed}
       worldShape={worldShape}
     >
       {content}
@@ -1494,42 +1474,25 @@ function ShopItemRender({ item, terrainSettings, globalSeed, worldShape, isPrevi
 }
 
 function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteractingRef, worldShape }) {
-  const desiredTarget = useRef(new THREE.Vector3(0, 1.6, 0))
-  const desiredPosition = useRef(new THREE.Vector3(...palette.cameraPosition))
+  const desiredPosition = useRef(new THREE.Vector3(45, 26, 45))
+  const desiredTarget   = useRef(new THREE.Vector3(0, 0.8, 0))
 
   useEffect(() => {
     if (!focusTarget) {
-      if (worldShape === 'globe') {
-         desiredTarget.current.set(0, -GLOBE_RADIUS, 0)
-         desiredPosition.current.set(palette.cameraPosition[0], palette.cameraPosition[1], palette.cameraPosition[2])
-      } else {
-         desiredTarget.current.set(0, 1.6, 0)
-         desiredPosition.current.set(...palette.cameraPosition)
-      }
+      desiredTarget.current.set(0, 0.8, 0)
+      desiredPosition.current.set(45, 26, 45)
       return
     }
 
-    if (worldShape === 'globe') {
-      const tMapped = mapToWorld(focusTarget.x, 1.8, focusTarget.z, worldShape)
-      desiredTarget.current.set(tMapped.position[0], tMapped.position[1], tMapped.position[2])
-      
-      const normal = new THREE.Vector3(tMapped.position[0], tMapped.position[1] + GLOBE_RADIUS, tMapped.position[2]).normalize()
-      desiredPosition.current.set(
-        tMapped.position[0] + normal.x * 12 + normal.z * 10,
-        tMapped.position[1] + normal.y * 12 + 4,
-        tMapped.position[2] + normal.z * 12 - normal.x * 10
-      )
-    } else {
-      desiredTarget.current.set(focusTarget.x, 1.8, focusTarget.z)
-      desiredPosition.current.set(focusTarget.x + 12, 9, focusTarget.z + 12)
-    }
-  }, [focusTarget, palette, worldShape])
+    desiredTarget.current.set(focusTarget.x, 1.8, focusTarget.z)
+    desiredPosition.current.set(focusTarget.x + 12, 9, focusTarget.z + 12)
+  }, [focusTarget, palette])
 
-  useFrame((state, delta) => {
+  useFrame((state, stateDelta) => {
     if (!cameraRef.current) return
 
     // ── Hard floor: camera must never go below terrain surface ──
-    const MIN_CAM_Y = worldShape === 'globe' ? -GLOBE_RADIUS + 3 : 1.2
+    const MIN_CAM_Y = 1.2
     if (cameraRef.current.position.y < MIN_CAM_Y) {
       cameraRef.current.position.y = MIN_CAM_Y
     }
@@ -1540,19 +1503,19 @@ function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteracting
       cameraRef.current.position.x,
       desiredPosition.current.x,
       2.3,
-      delta,
+      stateDelta,
     )
     cameraRef.current.position.y = THREE.MathUtils.damp(
       cameraRef.current.position.y,
       Math.max(MIN_CAM_Y, desiredPosition.current.y),
       2.3,
-      delta,
+      stateDelta,
     )
     cameraRef.current.position.z = THREE.MathUtils.damp(
       cameraRef.current.position.z,
       desiredPosition.current.z,
       2.3,
-      delta,
+      stateDelta,
     )
 
     if (controlsRef.current) {
@@ -1560,19 +1523,19 @@ function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteracting
         controlsRef.current.target.x,
         desiredTarget.current.x,
         2.6,
-        delta,
+        stateDelta,
       )
       controlsRef.current.target.y = THREE.MathUtils.damp(
         controlsRef.current.target.y,
         desiredTarget.current.y,
         2.6,
-        delta,
+        stateDelta,
       )
       controlsRef.current.target.z = THREE.MathUtils.damp(
         controlsRef.current.target.z,
         desiredTarget.current.z,
         2.6,
-        delta,
+        stateDelta,
       )
       controlsRef.current.update()
     }
@@ -1582,22 +1545,22 @@ function CameraRig({ cameraRef, controlsRef, focusTarget, palette, isInteracting
 }
 
 // ── Keyboard camera pan (WASD / arrow keys) ───────────────────────────────────
-const _fwd  = new THREE.Vector3()
-const _rgt  = new THREE.Vector3()
+const _fwd = new THREE.Vector3()
+const _rgt = new THREE.Vector3()
 const _move = new THREE.Vector3()
-const _up   = new THREE.Vector3(0, 1, 0)
+const _up = new THREE.Vector3(0, 1, 0)
 
 function KeyboardCameraController({ controlsRef, cameraRef }) {
   const keys = useRef(new Set())
 
   useEffect(() => {
     const onDown = e => keys.current.add(e.code)
-    const onUp   = e => keys.current.delete(e.code)
+    const onUp = e => keys.current.delete(e.code)
     window.addEventListener('keydown', onDown)
-    window.addEventListener('keyup',   onUp)
+    window.addEventListener('keyup', onUp)
     return () => {
       window.removeEventListener('keydown', onDown)
-      window.removeEventListener('keyup',   onUp)
+      window.removeEventListener('keyup', onUp)
     }
   }, [])
 
@@ -1616,19 +1579,19 @@ function KeyboardCameraController({ controlsRef, cameraRef }) {
     const rotR = k.has('KeyE')      // Rotate right/orbit clockwise
     const rotU = k.has('KeyI')      // Rotate up (pitch up)
     const rotD = k.has('KeyK')      // Rotate down (pitch down)
-    
+
     if (!fwd && !bck && !lft && !rgt && !rotL && !rotR && !rotU && !rotD) return
 
     const speed = 14 * delta
     const rotSpeed = 1.2 * delta
-    const cam   = cameraRef.current
-    const ctrl  = controlsRef.current
+    const cam = cameraRef.current
+    const ctrl = controlsRef.current
 
     // Handle orbit rotation
     if (rotL || rotR || rotU || rotD) {
       const spherical = new THREE.Spherical()
       spherical.setFromVector3(cam.position.clone().sub(ctrl.target))
-      
+
       if (rotL) {
         spherical.theta -= rotSpeed
       }
@@ -1641,11 +1604,11 @@ function KeyboardCameraController({ controlsRef, cameraRef }) {
       if (rotD) {
         spherical.phi = Math.max(Math.PI / 10, Math.min(Math.PI * 0.455, spherical.phi + rotSpeed))
       }
-      
+
       const newPosition = new THREE.Vector3()
       newPosition.setFromSpherical(spherical)
       newPosition.add(ctrl.target)
-      
+
       cam.position.copy(newPosition)
       ctrl.update()
     }
@@ -1657,10 +1620,10 @@ function KeyboardCameraController({ controlsRef, cameraRef }) {
       _rgt.crossVectors(_fwd, _up).normalize()
 
       _move.set(0, 0, 0)
-      if (fwd) _move.addScaledVector(_fwd,  speed)
+      if (fwd) _move.addScaledVector(_fwd, speed)
       if (bck) _move.addScaledVector(_fwd, -speed)
       if (lft) _move.addScaledVector(_rgt, -speed)
-      if (rgt) _move.addScaledVector(_rgt,  speed)
+      if (rgt) _move.addScaledVector(_rgt, speed)
 
       cam.position.add(_move)
       ctrl.target.add(_move)
@@ -1684,15 +1647,15 @@ function buildBlobRadii(trees, cx, cz, sectors, padding, noiseAmp, noiseFreq) {
   // Narrower SPREAD than before so the blob still tracks the cluster shape.
   const SPREAD = Math.ceil(sectors / 14)   // ~5 sectors each side — half as wide as before
   for (const t of trees) {
-    const dx   = t.x - cx
-    const dz   = t.z - cz
+    const dx = t.x - cx
+    const dz = t.z - cz
     const dist = Math.hypot(dx, dz)
-    const angle   = Math.atan2(dz, dx)
+    const angle = Math.atan2(dz, dx)
     const fBucket = ((angle / (Math.PI * 2)) * sectors % sectors + sectors) % sectors
-    const center  = Math.floor(fBucket)
+    const center = Math.floor(fBucket)
 
     for (let s = -SPREAD; s <= SPREAD; s++) {
-      const idx    = ((center + s) % sectors + sectors) % sectors
+      const idx = ((center + s) % sectors + sectors) % sectors
       const weight = Math.cos((s / (SPREAD + 1)) * Math.PI * 0.5)
       raw[idx] = Math.max(raw[idx], dist * weight)
     }
@@ -1733,7 +1696,7 @@ function buildBlobRadii(trees, cx, cz, sectors, padding, noiseAmp, noiseFreq) {
   for (let i = 0; i < sectors; i++) {
     const angle = (i / sectors) * Math.PI * 2
     const noise =
-      Math.sin(angle * noiseFreq             ) * noiseAmp +
+      Math.sin(angle * noiseFreq) * noiseAmp +
       Math.sin(angle * noiseFreq * 1.7 + 0.9) * noiseAmp * 0.4
     buf[i] = Math.max(1.0, buf[i] + padding + noise)
   }
@@ -1747,7 +1710,7 @@ function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hovered
   useFrame((state) => {
     if (!fillMatRef.current) return
     const isHov = hoveredAreaIdRef.current === area.habitId
-    const base  = isHov ? 0.38 : 0.22
+    const base = isHov ? 0.38 : 0.22
     const pulse = isHov ? Math.sin(state.clock.elapsedTime * 2.4) * 0.07 : 0
     fillMatRef.current.opacity = base + pulse
   })
@@ -1757,9 +1720,9 @@ function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hovered
     const SECTORS = 72
     const PAD = 6.0           // generous wrap-around padding
     // Gentle, large-scale noise seeded per habit for organic uniqueness
-    const seedVal   = area.habitId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
-    const noiseAmp  = 0.25 + (seedVal % 5) * 0.04   // 0.25 – 0.41  (subtle)
-    const noiseFreq = 2    + (seedVal % 3)           // 2 – 4         (low freq only)
+    const seedVal = area.habitId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const noiseAmp = 0.25 + (seedVal % 5) * 0.04   // 0.25 – 0.41  (subtle)
+    const noiseFreq = 2 + (seedVal % 3)           // 2 – 4         (low freq only)
 
     const radii = buildBlobRadii(trees, cx, cz, SECTORS, PAD, noiseAmp, noiseFreq)
 
@@ -1767,17 +1730,17 @@ function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hovered
     // Each sector becomes 2 triangles with a sub-division ring at 60 % so the
     // fill looks smooth over undulating terrain.
     const positions = []
-    const colorArr  = []
+    const colorArr = []
 
     function pushVertex(wx, wz, alpha) {
       const wy = sampleTerrainMeshHeight(wx, wz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.14
-      const m  = mapToWorld(wx, wy, wz, worldShape)
+      const m = mapToWorld(wx, wy, wz, worldShape)
       positions.push(...m.position)
       colorArr.push(1, 1, 1, alpha)
     }
 
     for (let i = 0; i < SECTORS; i++) {
-      const a0 = (i       / SECTORS) * Math.PI * 2
+      const a0 = (i / SECTORS) * Math.PI * 2
       const a1 = ((i + 1) / SECTORS) * Math.PI * 2
       const r0 = radii[i]
       const r1 = radii[(i + 1) % SECTORS]
@@ -1786,8 +1749,8 @@ function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hovered
       // 4 points: centre, inner-left, inner-right, outer-left, outer-right
       const innerL = { x: cx + Math.cos(a0) * rMid, z: cz + Math.sin(a0) * rMid }
       const innerR = { x: cx + Math.cos(a1) * rMid, z: cz + Math.sin(a1) * rMid }
-      const outerL = { x: cx + Math.cos(a0) * r0,   z: cz + Math.sin(a0) * r0   }
-      const outerR = { x: cx + Math.cos(a1) * r1,   z: cz + Math.sin(a1) * r1   }
+      const outerL = { x: cx + Math.cos(a0) * r0, z: cz + Math.sin(a0) * r0 }
+      const outerR = { x: cx + Math.cos(a1) * r1, z: cz + Math.sin(a1) * r1 }
 
       // Tri 1: centre → innerL → innerR
       pushVertex(cx, cz, 1.0)
@@ -1807,7 +1770,7 @@ function HabitAreaShape({ area, terrainSettings, globalSeed, worldShape, hovered
 
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    geom.setAttribute('color',    new THREE.Float32BufferAttribute(colorArr,  4))
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colorArr, 4))
     geom.computeVertexNormals()
     return geom
   }, [area, terrainSettings, globalSeed, worldShape])
@@ -1834,28 +1797,28 @@ const _WHITE = new THREE.Color(1, 1, 1)
 function HabitAreaBorder({ area, terrainSettings, globalSeed, worldShape, hoveredAreaIdRef }) {
   const innerMatRef = useRef(null)
   const outerMatRef = useRef(null)
-  const glowT       = useRef(0)
-  const baseColor   = useMemo(() => new THREE.Color(area.leafColor), [area.leafColor])
+  const glowT = useRef(0)
+  const baseColor = useMemo(() => new THREE.Color(area.leafColor), [area.leafColor])
 
   const geometry = useMemo(() => {
     const { centerX: cx, centerZ: cz, trees } = area
     const SECTORS = 72
     const PAD = 6.0
-    const seedVal   = area.habitId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
-    const noiseAmp  = 0.25 + (seedVal % 5) * 0.04
-    const noiseFreq = 2    + (seedVal % 3)
+    const seedVal = area.habitId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const noiseAmp = 0.25 + (seedVal % 5) * 0.04
+    const noiseFreq = 2 + (seedVal % 3)
 
     const radii = buildBlobRadii(trees, cx, cz, SECTORS, PAD, noiseAmp, noiseFreq)
 
     const points = []
     for (let i = 0; i <= SECTORS; i++) {
-      const idx   = i % SECTORS
+      const idx = i % SECTORS
       const angle = (idx / SECTORS) * Math.PI * 2
-      const r     = radii[idx]
-      const wx    = cx + Math.cos(angle) * r
-      const wz    = cz + Math.sin(angle) * r
-      const wy    = sampleTerrainMeshHeight(wx, wz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.20
-      const m     = mapToWorld(wx, wy, wz, worldShape)
+      const r = radii[idx]
+      const wx = cx + Math.cos(angle) * r
+      const wz = cz + Math.sin(angle) * r
+      const wy = sampleTerrainMeshHeight(wx, wz, terrainSettings, globalSeed) + TERRAIN_Y_OFFSET + 0.20
+      const m = mapToWorld(wx, wy, wz, worldShape)
       points.push(...m.position)
     }
 
@@ -1942,7 +1905,7 @@ function HabitAreas({
             </group>
 
             <HabitAreaBorder area={area} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} hoveredAreaIdRef={hoveredAreaIdRef} />
-            
+
 
           </group>
         )
@@ -1954,7 +1917,6 @@ function HabitAreas({
 function SceneContents({
   habits,
   focusTarget,
-  timeOfDay,
   viewMode,
   selectedTreeId,
   onTreeSelect,
@@ -1973,7 +1935,7 @@ function SceneContents({
   const hoveredAreaIdRef = useRef(null)
   // Defer selection so terrain-heavy tree reconciliation doesn't block the click response
   const deferredSelectedTreeId = useDeferredValue(selectedTreeId)
-  const palette = interpolatePalette(timeOfDay)
+  const palette = PALETTE
   const previewPosRef = useRef(null)
   const placementRotationRef = useRef(0)
   const keysDownRef = useRef({})
@@ -2079,7 +2041,7 @@ function SceneContents({
   return (
     <>
       <color attach="background" args={[palette.background]} />
-      <fog attach="fog" args={[palette.fog, 60, 220]} />
+      <fog attach="fog" args={[palette.fog, 100, 320]} />
 
       <PerspectiveCamera
         ref={cameraRef}
@@ -2108,8 +2070,8 @@ function SceneContents({
         color={palette.sunColor}
         intensity={palette.sunIntensity}
         position={palette.sunPosition}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
         shadow-camera-near={1}
         shadow-camera-far={120}
         shadow-camera-top={36}
@@ -2124,52 +2086,43 @@ function SceneContents({
         groundColor={palette.ground}
       />
 
-      <Sky
-        distance={400000}
-        sunPosition={palette.sunPosition}
-        inclination={0.52}
-        azimuth={0.22}
-        rayleigh={lerpN(1.9, 0.5, Math.max(0, (timeOfDay - 0.5) * 2))}
-        turbidity={lerpN(7, 10, Math.max(0, (timeOfDay - 0.5) * 2))}
-      />
+      <SkyDome topColor="#5da9ef" bottomColor="#b6e0ff" />
 
       <SunDisc sunPosition={palette.sunPosition} sunColor={palette.sunColor} />
 
       <Sparkles
-        count={timeOfDay > 0.75 ? 34 : 18}
+        count={28}
         color={palette.sparkle}
-        scale={[44, 12, 44]}
+        scale={[72, 14, 72]}
         position={[0, 4, 0]}
         size={2.8}
         speed={0.16}
         opacity={0.22}
       />
 
-      <AmbientLife palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} allTrees={allTrees} habits={habits} worldShape={worldShape} />
-      <Water worldShape={worldShape} />
-      <WaterRipples worldShape={worldShape} />
+      <AmbientLife palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} habits={habits} />
+      <Water palette={palette} />
       <Ground palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} onPointerMove={handlePointerMove} onClick={handlePointerClick} />
       <WildGrass palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
-      <Rocks  palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
+      <Rocks palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
       <Bushes palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
-      <EdgeFence palette={palette} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} />
-      
+
       {inventory?.filter(i => typeof i === 'object').map((item) => (
-        <ShopItemRender 
-          key={item.id} 
-          item={item} 
-          terrainSettings={terrainSettings} 
-          globalSeed={globalSeed} 
-          worldShape={worldShape} 
+        <ShopItemRender
+          key={item.id}
+          item={item}
+          terrainSettings={terrainSettings}
+          globalSeed={globalSeed}
+          worldShape={worldShape}
           placementItem={placementItem}
           onRemoveItem={onRemoveItem}
         />
       ))}
-      
+
       {placementItem && (
         <ShopItemRender item={{ type: placementItem }} terrainSettings={terrainSettings} globalSeed={globalSeed} worldShape={worldShape} isPreview previewPosRef={previewPosRef} placementRotationRef={placementRotationRef} keysDownRef={keysDownRef} />
       )}
-      
+
       <HabitAreas
         areas={areas}
         hoveredAreaIdRef={hoveredAreaIdRef}
@@ -2179,51 +2132,45 @@ function SceneContents({
         globalSeed={globalSeed}
         worldShape={worldShape}
         onSelectArea={(area) => {
-          if (worldShape === 'globe') {
-             const tMapped = mapToWorld(area.centerX, 1.8, area.centerZ, worldShape)
-             controlsRef.current?.target.set(tMapped.position[0], tMapped.position[1], tMapped.position[2])
-          } else {
-             controlsRef.current?.target.set(area.centerX, 0.8, area.centerZ)
-          }
+          controlsRef.current?.target.set(area.centerX, 0.8, area.centerZ)
           controlsRef.current?.update()
         }}
       />
 
       {resolvedTrees.map(({ habit, tree, tx, tz, mapped }) => {
-          const inAreaView = viewMode === 'areas'
+        const inAreaView = viewMode === 'areas'
 
-          return (
-            <Tree
-              key={tree.id}
-              species={habit.species}
-              tree={tree}
-              mappedPosition={mapped.position}
-              mappedQuaternion={mapped.quaternion}
-              isSelected={!inAreaView && deferredSelectedTreeId === tree.id}
-              interactive={!inAreaView}
-              onSelect={inAreaView ? undefined : () =>
-                onTreeSelect?.({
-                  treeId: tree.id,
-                  habitId: habit.id,
-                  habitName: habit.name,
-                  plantedAt: tree.plantedAt,
-                  treeCount: habit.trees.length,
-                  daysCompleted: new Set(
-                    habit.trees.map((item) => new Date(item.plantedAt).toDateString()),
-                  ).size,
-                  streak:    getHabitStreak(habit),
-                  milestone: getMilestone(habit.trees.length),
-                  position: { x: tx, z: tz },
-                  species: {
-                    canopyType: habit.species.canopyType,
-                    leafColor:  habit.species.leafColor,
-                    barkColor:  habit.species.barkColor,
-                  },
-                })
-              }
-            />
-          )
-        })
+        return (
+          <Tree
+            key={tree.id}
+            species={habit.species}
+            tree={tree}
+            mappedPosition={mapped.position}
+            isSelected={!inAreaView && deferredSelectedTreeId === tree.id}
+            interactive={!inAreaView}
+            onSelect={inAreaView ? undefined : () =>
+              onTreeSelect?.({
+                treeId: tree.id,
+                habitId: habit.id,
+                habitName: habit.name,
+                plantedAt: tree.plantedAt,
+                treeCount: habit.trees.length,
+                daysCompleted: new Set(
+                  habit.trees.map((item) => new Date(item.plantedAt).toDateString()),
+                ).size,
+                streak: getHabitStreak(habit),
+                milestone: getMilestone(habit.trees.length),
+                position: { x: tx, z: tz },
+                species: {
+                  canopyType: habit.species.canopyType,
+                  leafColor: habit.species.leafColor,
+                  barkColor: habit.species.barkColor,
+                },
+              })
+            }
+          />
+        )
+      })
       }
 
       <OrbitControls
@@ -2234,7 +2181,7 @@ function SceneContents({
         onEnd={() => {
           isInteractingRef.current = false
         }}
-        enablePan={worldShape !== 'globe'}
+        enablePan={true}
         enableRotate
         enableZoom
         enableDamping
@@ -2244,8 +2191,8 @@ function SceneContents({
         panSpeed={0.85}
         maxPolarAngle={Math.PI * 0.455}  // ~82° — keeps camera above the terrain
         minPolarAngle={Math.PI / 10}
-        minDistance={worldShape === 'globe' ? GLOBE_RADIUS + 5 : 7}
-        maxDistance={worldShape === 'globe' ? GLOBE_RADIUS + 60 : 120}
+        minDistance={7}
+        maxDistance={180}
         screenSpacePanning={false}
         mouseButtons={{
           LEFT: THREE.MOUSE.PAN,
@@ -2263,7 +2210,6 @@ function SceneContents({
 function ForestScene({
   habits,
   focusTarget,
-  timeOfDay,
   viewMode,
   selectedTreeId,
   onTreeSelect,
@@ -2278,8 +2224,8 @@ function ForestScene({
   return (
     <Canvas
       shadows
-      dpr={[1, 1.8]}
-      gl={{ antialias: true }}
+      dpr={[1, 1.5]}
+      gl={{ antialias: true, powerPreference: "high-performance" }}
       className={`absolute inset-0 ${placementItem ? 'cursor-crosshair' : ''}`}
       onPointerMissed={() => {
         onTreeSelect?.(null)
@@ -2288,7 +2234,6 @@ function ForestScene({
       <SceneContents
         habits={habits}
         focusTarget={focusTarget}
-        timeOfDay={timeOfDay}
         viewMode={viewMode}
         selectedTreeId={selectedTreeId}
         onTreeSelect={onTreeSelect}

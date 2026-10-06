@@ -2,7 +2,6 @@ import {
   Suspense,
   lazy,
   useCallback,
-  useDeferredValue,
   useEffect,
   useRef,
   useState,
@@ -14,7 +13,6 @@ import HabitPanel from './components/HabitPanel'
 import {
   completeHabitForToday,
   createHabitRecord,
-  DEFAULT_TERRAIN_SETTINGS,
   deleteHabit,
   uncompleteHabitForToday,
   getForestTotals,
@@ -22,10 +20,8 @@ import {
   getTodayStamp,
   loadHabits,
   loadTerrainSettings,
-  loadSceneSetting,
   saveHabits,
   saveTerrainSettings,
-  saveSceneSetting,
   createDemoHabits,
   loadGlobalSeed,
   saveGlobalSeed,
@@ -35,6 +31,11 @@ import {
   saveInventory,
 } from './lib/forest'
 import ShopModal, { SHOP_ITEMS } from './components/ShopModal'
+import StartLoader from './components/StartLoader'
+import ShopPreloadRunner from './components/ShopPreloadRunner'
+import NotFoundPage from './components/NotFoundPage'
+import LegalModal from './components/LegalModal'
+import { isAudioMuted, playPlantTreeChime, playUncompleteSound, setAudioMuted } from './lib/audio'
 
 
 // ── Grove info panel ─────────────────────────────────────────────────────────
@@ -70,53 +71,33 @@ function GroveInfoPanel({ setterRef, hidden }) {
 }
 
 const ForestScene = lazy(() => import('./components/ForestScene'))
-const TERRAIN_SLIDERS = [
-  {
-    id: 'amplitude',
-    label: 'Elevation',
-    min: 0.2,
-    max: 1.4,
-    step: 0.05,
-  },
-  {
-    id: 'lowFrequency',
-    label: 'Hill Size',
-    min: 0.5,
-    max: 1.8,
-    step: 0.05,
-  },
-  {
-    id: 'detailFrequency',
-    label: 'Roughness',
-    min: 0.5,
-    max: 2.1,
-    step: 0.05,
-  },
-  {
-    id: 'edgeSoftness',
-    label: 'Edge Smoothing',
-    min: 0.3,
-    max: 2,
-    step: 0.05,
-  },
-]
 
 function App() {
-  const isDemo = typeof window !== 'undefined' && window.location.pathname === '/demo'
+  const rawPath = typeof window !== 'undefined' ? window.location.pathname.replace(/\/$/, '') || '/' : '/'
+  const isDemo = rawPath === '/demo'
+  const isPrivacy = rawPath === '/privacy'
+  const isTerms = rawPath === '/terms'
+  const isNotFound = rawPath !== '/' && !isDemo && !isPrivacy && !isTerms
+
+  const [legalModalType, setLegalModalType] = useState(() => {
+    if (isPrivacy) return 'privacy'
+    if (isTerms) return 'terms'
+    return null
+  })
+
   const [globalSeed, setGlobalSeed] = useState(loadGlobalSeed)
   const [habits, setHabits] = useState(() => (isDemo ? createDemoHabits() : loadHabits()))
-  const [timeOfDay, setTimeOfDay] = useState(loadSceneSetting)
+  const [inventory, setInventory] = useState(loadInventory)
+  const [points, setPoints] = useState(() => (isDemo ? 9999999 : loadPoints(habits, inventory)))
   const [focusTarget, setFocusTarget] = useState(null)
   const [viewMode, setViewMode] = useState('forest')
   const [selectedTreeInfo, setSelectedTreeInfo] = useState(null)
   const areaInfoSetterRef = useRef(null)
   const [terrainSettings, setTerrainSettings] = useState(loadTerrainSettings)
-  const [points, setPoints] = useState(() => (isDemo ? 999999 : loadPoints()))
-  const [inventory, setInventory] = useState(loadInventory)
   const [placementItem, setPlacementItem] = useState(null)
+  const [isMuted, setIsMuted] = useState(() => isAudioMuted())
   const [isShopOpen, setIsShopOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
-  const deferredHabits = useDeferredValue(habits)
   const pendingFocusRef = useRef(null)
   const todayStamp = getTodayStamp()
   const forestTotals = getForestTotals(habits)
@@ -127,6 +108,7 @@ function App() {
   const [showNewOnboarding, setShowNewOnboarding] = useState(() =>
     !isDemo && !localStorage.getItem(ONBOARDING_KEY)
   )
+  const [isInitialLoading, setIsInitialLoading] = useState(() => !showNewOnboarding)
   const [showTutorial, setShowTutorial] = useState(false)
 
   const handleOnboardingComplete = useCallback(({ habitNames }) => {
@@ -155,20 +137,22 @@ function App() {
   }, [habits, isDemo])
 
   useEffect(() => {
-    saveSceneSetting(timeOfDay)
-  }, [timeOfDay])
+    if (!isDemo) {
+      saveTerrainSettings(terrainSettings)
+    }
+  }, [terrainSettings, isDemo])
 
   useEffect(() => {
-    saveTerrainSettings(terrainSettings)
-  }, [terrainSettings])
+    if (!isDemo) {
+      savePoints(points, habits, inventory)
+    }
+  }, [points, habits, inventory, isDemo])
 
   useEffect(() => {
-    savePoints(points)
-  }, [points])
-
-  useEffect(() => {
-    saveInventory(inventory)
-  }, [inventory])
+    if (!isDemo) {
+      saveInventory(inventory)
+    }
+  }, [inventory, isDemo])
 
   useEffect(() => {
     if (!pendingFocusRef.current) {
@@ -201,6 +185,7 @@ function App() {
             x: result.plantedTree.x,
             z: result.plantedTree.z,
           }
+          playPlantTreeChime()
         }
         return result.nextHabits
       })
@@ -218,6 +203,7 @@ function App() {
             x: result.plantedTree.x,
             z: result.plantedTree.z,
           }
+          playPlantTreeChime()
         }
 
         if (result.pointsEarned > 0) {
@@ -235,6 +221,7 @@ function App() {
         const result = uncompleteHabitForToday(habitId, current)
         if (result.pointsRemoved > 0) {
           setPoints(p => Math.max(0, p - result.pointsRemoved))
+          playUncompleteSound()
         }
         return result.nextHabits
       })
@@ -283,11 +270,18 @@ function App() {
     setInventory(inv => inv.filter(i => i.id !== item.id))
   }
 
-  // To allow importing SHOP_ITEMS here, I need to make sure SHOP_ITEMS is exported from ShopModal
-  // Or I can just deduct points in handleBuyItem, which might be simpler, but if they cancel placement they lose points.
-  // Actually, I can just deduct points during handlePlaceItem. But wait, I need the cost!
-  // It's cleaner to deduct points during handleBuyItem, but if I want to let them cancel, I should store it.
-  // Let's just deduct it when they actually place it.
+  const handleResetProgress = useCallback(() => {
+    try {
+      localStorage.clear()
+      sessionStorage.clear()
+    } catch (e) {
+      console.warn('Failed to clear storage:', e)
+    }
+    // Brief delay to allow the confirm state animation to finish smoothly
+    setTimeout(() => {
+      window.location.href = '/'
+    }, 600)
+  }, [])
 
 
   useEffect(() => {
@@ -300,12 +294,16 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [placementItem])
 
+  if (isNotFound) {
+    return <NotFoundPage />
+  }
+
   return (
-    <main className="relative h-screen overflow-hidden bg-[#b0c5b2] text-white">
+    <main className="relative h-screen overflow-hidden bg-[#5da9ef] text-white">
       {/* ── Placement Mode Overlay ── */}
       {placementItem && (
         <div className="absolute top-24 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-          <div className="bg-[#16271c]/90 backdrop-blur-md px-6 py-3 rounded-full border border-[#a8d878]/30 shadow-2xl flex items-center gap-3">
+          <div className="forest-panel px-6 py-3 rounded-full shadow-2xl flex items-center gap-3">
             <span className="text-xl">🏕️</span>
             <div>
               <p className="text-sm font-bold text-[#eef8ea]">Placement Mode</p>
@@ -313,6 +311,16 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Start Loader for initial startup & preloading ── */}
+      {isInitialLoading && !showNewOnboarding && (
+        <StartLoader onDone={() => setIsInitialLoading(false)} fullScreen={true} />
+      )}
+
+      {/* ── Background preloader while user is in onboarding ── */}
+      {showNewOnboarding && (
+        <ShopPreloadRunner isRunning={true} />
       )}
 
       {/* ── New first-visit onboarding ── */}
@@ -325,11 +333,10 @@ function App() {
         <TutorialTooltips onDone={() => setShowTutorial(false)} />
       )}
 
-      <Suspense fallback={<div className="fixed inset-0 bg-[#a9c3ad]" />}>
+      <Suspense fallback={<StartLoader fullScreen={true} />}>
         <ForestScene
-          habits={deferredHabits}
+          habits={habits}
           focusTarget={focusTarget}
-          timeOfDay={timeOfDay}
           viewMode={viewMode}
           terrainSettings={terrainSettings}
           selectedTreeId={selectedTreeInfo?.treeId ?? null}
@@ -343,30 +350,146 @@ function App() {
         />
       </Suspense>
 
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.14),transparent_42%),linear-gradient(180deg,rgba(15,34,24,0.1),rgba(17,31,22,0.38))]" />
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_60%,rgba(17,31,22,0.35)_100%)]" />
 
-      {/* ── Top-right info pill: greeting + date + tree count ── */}
-      <div className="pointer-events-none absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
-        <div className="forest-panel pointer-events-auto rounded-[22px] px-4 py-2.5 text-right text-[#eef8ea]/90 flex items-center gap-4">
-          <div>
-            {userName && (
-              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#a8d878]/80 mb-0.5">
-                Hi, {userName} 👋
-              </p>
-            )}
-            <p className="text-sm font-medium text-white">{sceneDateLabel}</p>
-            <p className="mt-0.5 text-[0.68rem] uppercase tracking-[0.24em] text-[#d4e4cc]/75">
-              {forestTotals.treeCount} {forestTotals.treeCount === 1 ? 'tree' : 'trees'} growing • <span className="text-[#a8d878] font-bold">{points} pts</span>
-            </p>
-          </div>
-          <button
-            onClick={() => setIsShopOpen(true)}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-lg transition hover:bg-white/20 active:scale-95"
-            title="Open Shop"
+      {/* ── Top-right action buttons (Audio chime toggle + Shop) ── */}
+      <div className="pointer-events-auto absolute top-4 right-4 z-20 flex items-center gap-2">
+        <button
+          onClick={() => {
+            const nextMuted = !isMuted
+            setIsMuted(nextMuted)
+            setAudioMuted(nextMuted)
+            if (!nextMuted) {
+              playPlantTreeChime()
+            }
+          }}
+          className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/20 bg-black/25 backdrop-blur-md shadow-lg transition-all duration-200 hover:border-white/35 hover:bg-black/40 hover:scale-105 active:scale-95"
+          title={isMuted ? 'Unmute sounds' : 'Mute sounds'}
+          aria-label={isMuted ? 'Unmute sounds' : 'Mute sounds'}
+        >
+          {isMuted ? (
+            <svg
+              className="w-5 h-5 text-white/50 transition-colors group-hover:text-white/80"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <line x1="23" y1="9" x2="17" y2="15" />
+              <line x1="17" y1="9" x2="23" y2="15" />
+            </svg>
+          ) : (
+            <svg
+              className="w-5 h-5 text-[#a8d878] transition-transform duration-200 group-hover:scale-110 drop-shadow-[0_2px_4px_rgba(0,0,0,0.35)]"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+            </svg>
+          )}
+        </button>
+
+        <button
+          onClick={() => setIsShopOpen(true)}
+          className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/20 bg-black/25 backdrop-blur-md shadow-lg transition-all duration-200 hover:border-white/35 hover:bg-black/40 hover:scale-105 active:scale-95"
+          title="Open Shop"
+          aria-label="Open Shop"
+        >
+          <svg
+            className="w-5 h-5 text-white transition-transform duration-200 group-hover:scale-110 drop-shadow-[0_2px_4px_rgba(0,0,0,0.35)]"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
-            🏪
-          </button>
+            <path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7" />
+            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+            <path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4" />
+            <path d="M2 7h20" />
+            <path d="M22 7v3a2 2 0 0 1-2 2 2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12v0a2 2 0 0 1-2-2V7" />
+          </svg>
+        </button>
+      </div>
+
+      {/* ── Top info: greeting + tree count + checklist (top-left on mobile, top-right on desktop to the left of shop & sound toggle) ── */}
+      <div className="pointer-events-none absolute top-4 left-4 md:left-auto md:right-28 z-10 flex flex-col items-start md:items-end gap-2 max-w-[calc(100vw-7rem)] md:max-w-xs">
+        <div className="pointer-events-auto text-left md:text-right drop-shadow-[0_2px_8px_rgba(0,0,0,0.35)]">
+          {userName && (
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a8d878] mb-0.5">
+              Hi, {userName} 👋
+            </p>
+          )}
+          <p className="text-[0.74rem] uppercase tracking-[0.22em] text-white/95 font-bold">
+            {forestTotals.treeCount} {forestTotals.treeCount === 1 ? 'tree' : 'trees'} growing • <span className="text-[#a8d878] font-extrabold">{points} pts</span>
+          </p>
         </div>
+
+        {/* ── Quick Habit Checklist ── */}
+        {habits.length > 0 && (
+          <div className="pointer-events-auto flex flex-col items-start md:items-end gap-1.5 mt-1 max-h-[50vh] overflow-y-auto pl-0.5 md:pl-0 md:pr-0.5">
+            {habits.map((habit) => {
+              const isCompleted = habit.lastCompletedOn === todayStamp
+              return (
+                <button
+                  type="button"
+                  key={habit.id}
+                  onClick={() => {
+                    if (isPending) return
+                    if (isCompleted) {
+                      handleUncompleteHabit(habit.id)
+                    } else {
+                      handleCompleteHabit(habit.id)
+                    }
+                  }}
+                  className="group flex items-center gap-2.5 py-1 px-1 cursor-pointer select-none transition-all duration-200 active:scale-[0.98] outline-none focus:outline-none"
+                  title={isCompleted ? `Mark ${habit.name} as undone` : `Mark ${habit.name} as done`}
+                >
+                  {/* Circular tick box */}
+                  <div
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-all duration-300 ${
+                      isCompleted
+                        ? 'bg-[#a8d878]'
+                        : 'border-2 border-white/80 group-hover:border-white'
+                    }`}
+                  >
+                    {isCompleted && (
+                      <svg
+                        className="h-2.5 w-2.5 text-[#11240f] stroke-[3]"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    )}
+                  </div>
+
+                  {/* Habit name */}
+                  <span
+                    className={`text-xs font-semibold tracking-wide ${
+                      isCompleted ? 'line-through text-white/40' : 'text-white/95 group-hover:text-white'
+                    }`}
+                  >
+                    {habit.name}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
 
 
@@ -377,18 +500,18 @@ function App() {
           todayStamp={todayStamp}
           sceneDateLabel={sceneDateLabel}
           forestTotals={forestTotals}
-          timeOfDay={timeOfDay}
           viewMode={viewMode}
           onAddHabit={handleAddHabit}
           onCompleteHabit={handleCompleteHabit}
           onUncompleteHabit={handleUncompleteHabit}
-          onSetTimeOfDay={setTimeOfDay}
           onSetViewMode={setViewMode}
           onDeleteHabit={handleDeleteHabit}
           globalSeed={globalSeed}
           onSetGlobalSeed={handleSetGlobalSeed}
           terrainSettings={terrainSettings}
           onSetTerrainSettings={setTerrainSettings}
+          onResetProgress={handleResetProgress}
+          onOpenLegal={setLegalModalType}
         />
 
         {/* ── Bottom info panel ── */}
@@ -447,9 +570,20 @@ function App() {
         isOpen={isShopOpen} 
         onClose={() => setIsShopOpen(false)} 
         points={points} 
-        inventory={inventory} 
         onBuy={handleBuyItem} 
       />
+
+      {legalModalType && (
+        <LegalModal
+          type={legalModalType}
+          onClose={() => {
+            setLegalModalType(null)
+            if (isPrivacy || isTerms) {
+              window.history.pushState(null, '', '/')
+            }
+          }}
+        />
+      )}
 
     </main>
   )

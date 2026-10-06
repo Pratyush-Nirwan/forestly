@@ -1,0 +1,6 @@
+# robots.txt for Forestly
+User-agent: *
+Allow: /
+Disallow: /scratch/
+
+Sitemap: https://forestly.app/sitemap.xml

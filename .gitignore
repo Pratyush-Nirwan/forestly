@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Promo & scratch artifacts
+speech.wav
+brag-output/

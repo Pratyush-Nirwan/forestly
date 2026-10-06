@@ -1,6 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
+
+// Shared static geometries to prevent reinstantiation overhead
+const sharedTrunkGeom = new THREE.CylinderGeometry(0.72, 1, 1, 7)
+const sharedConeGeom = new THREE.ConeGeometry(0.95, 1.8, 7)
+const sharedIcoGeom = new THREE.IcosahedronGeometry(1, 0)
 
 function createLeafClusters(species, tree) {
   if (species.canopyType === 'conifer') {
@@ -37,21 +42,19 @@ function createLeafClusters(species, tree) {
 function LeafCluster({ type, color, scale, position }) {
   if (type === 'cone') {
     return (
-      <mesh castShadow position={position}>
-        <coneGeometry args={[scale * 0.95, scale * 1.8, 7]} />
+      <mesh castShadow position={position} geometry={sharedConeGeom} scale={scale}>
         <meshStandardMaterial color={color} flatShading roughness={0.95} />
       </mesh>
     )
   }
   return (
-    <mesh castShadow position={position}>
-      <icosahedronGeometry args={[scale, 0]} />
+    <mesh castShadow position={position} geometry={sharedIcoGeom} scale={scale}>
       <meshStandardMaterial color={color} flatShading roughness={0.9} />
     </mesh>
   )
 }
 
-function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedPosition, mappedQuaternion }) {
+function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedPosition }) {
   const groupRef        = useRef(null)
   const canopyRef       = useRef(null)
   const outlineGroupRef = useRef(null)
@@ -59,12 +62,12 @@ function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedP
   const hoverT          = useRef(0)
   const prevSelected    = useRef(isSelected)
 
-  const clusters        = createLeafClusters(species, tree)
+  // ponytail: memoize leaf clusters math
+  const clusters        = useMemo(() => createLeafClusters(species, tree), [species, tree])
   const trunkHeight     = species.trunkHeight * tree.heightScale
   const trunkUnderground = 1.2
   const fullTrunkHeight  = trunkHeight + trunkUnderground
   const baseRadius      = species.trunkThickness * tree.trunkScale
-  const topRadius       = baseRadius * 0.72
 
   // ── Grow-in on mount ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -117,7 +120,6 @@ function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedP
   return (
     <group
       position={mappedPosition}
-      quaternion={mappedQuaternion}
       onClick={(e)       => { e.stopPropagation(); onSelect?.(tree) }}
       onPointerOver={(e) => {
         if (!interactive) return
@@ -136,8 +138,7 @@ function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedP
         <group ref={groupRef} rotation={[tree.leanX, 0, tree.leanZ]}>
 
           {/* ── Trunk ─────────────────────────────────────────────────────── */}
-          <mesh castShadow receiveShadow position={[0, (trunkHeight - trunkUnderground) / 2, 0]}>
-            <cylinderGeometry args={[topRadius, baseRadius, fullTrunkHeight, 7]} />
+          <mesh castShadow receiveShadow position={[0, (trunkHeight - trunkUnderground) / 2, 0]} geometry={sharedTrunkGeom} scale={[baseRadius, fullTrunkHeight, baseRadius]}>
             <meshStandardMaterial
               color={species.barkColor}
               flatShading
@@ -158,8 +159,7 @@ function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedP
           {/* ── Outline shells (BackSide, opacity animated by useFrame) ───── */}
           <group ref={outlineGroupRef}>
             {/* Trunk outline */}
-            <mesh position={[0, (trunkHeight - trunkUnderground) / 2, 0]}>
-              <cylinderGeometry args={[topRadius * 1.24, baseRadius * 1.24, fullTrunkHeight * 1.05, 7]} />
+            <mesh position={[0, (trunkHeight - trunkUnderground) / 2, 0]} geometry={sharedTrunkGeom} scale={[baseRadius * 1.24, fullTrunkHeight * 1.05, baseRadius * 1.24]}>
               <meshStandardMaterial
                 color="white" emissive="white" emissiveIntensity={1.0}
                 side={THREE.BackSide} transparent opacity={0} depthWrite={false}
@@ -170,16 +170,14 @@ function Tree({ species, tree, onSelect, isSelected, interactive = true, mappedP
             <group position={[tree.crownOffsetX, trunkHeight * species.crownLift, tree.crownOffsetZ]}>
               {clusters.map((cluster, index) =>
                 cluster.type === 'cone' ? (
-                  <mesh key={`ol-${index}`} position={cluster.position}>
-                    <coneGeometry args={[cluster.scale * 0.95 * 1.20, cluster.scale * 1.8 * 1.10, 7]} />
+                  <mesh key={`ol-${index}`} position={cluster.position} geometry={sharedConeGeom} scale={[cluster.scale * 1.20, cluster.scale * 1.10, cluster.scale * 1.20]}>
                     <meshStandardMaterial
                       color="white" emissive="white" emissiveIntensity={1.0}
                       side={THREE.BackSide} transparent opacity={0} depthWrite={false}
                     />
                   </mesh>
                 ) : (
-                  <mesh key={`ol-${index}`} position={cluster.position}>
-                    <icosahedronGeometry args={[cluster.scale * 1.20, 0]} />
+                  <mesh key={`ol-${index}`} position={cluster.position} geometry={sharedIcoGeom} scale={cluster.scale * 1.20}>
                     <meshStandardMaterial
                       color="white" emissive="white" emissiveIntensity={1.0}
                       side={THREE.BackSide} transparent opacity={0} depthWrite={false}
