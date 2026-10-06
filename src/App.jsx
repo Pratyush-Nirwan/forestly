@@ -400,6 +400,7 @@ function App() {
 
         <button
           onClick={() => setIsShopOpen(true)}
+          data-tutorial="shop-btn"
           className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/20 bg-black/25 backdrop-blur-md shadow-lg transition-all duration-200 hover:border-white/35 hover:bg-black/40 hover:scale-105 active:scale-95"
           title="Open Shop"
           aria-label="Open Shop"
@@ -437,7 +438,7 @@ function App() {
 
         {/* ── Quick Habit Checklist ── */}
         {habits.length > 0 && (
-          <div className="pointer-events-auto flex flex-col items-start md:items-end gap-1.5 mt-1 max-h-[50vh] overflow-y-auto pl-0.5 md:pl-0 md:pr-0.5">
+          <div data-tutorial="quick-checklist" className="pointer-events-auto flex flex-col items-start md:items-end gap-1.5 mt-1 max-h-[50vh] overflow-y-auto pl-0.5 md:pl-0 md:pr-0.5">
             {habits.map((habit) => {
               const isCompleted = habit.lastCompletedOn === todayStamp
               return (

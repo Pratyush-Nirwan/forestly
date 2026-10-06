@@ -732,6 +732,7 @@ function HabitPanel({
       {/* ── Mobile FAB toggle ── */}
       <button
         type="button"
+        data-tutorial="mobile-fab"
         aria-label={mobileOpen ? 'Close habit panel' : 'Open habit panel'}
         onClick={() => setMobileOpen(o => !o)}
         className="forest-panel pointer-events-auto fixed bottom-5 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-full border border-white/20 text-[#edf6ea] shadow-lg transition active:scale-95 md:hidden mb-[env(safe-area-inset-bottom,0px)] mr-[env(safe-area-inset-right,0px)]"

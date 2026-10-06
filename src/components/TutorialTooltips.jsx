@@ -4,24 +4,63 @@ export const TUTORIAL_KEY = 'forestly_tutorial_v1'
 
 const TOUCH_CONTROLS = [
   { icon: '👆', action: 'Pan camera',     detail: 'Swipe with one finger' },
-  { icon: '✌️', action: 'Orbit / rotate', detail: 'Hold one finger, swipe with another' },
-  { icon: '🤏', action: 'Zoom',           detail: 'Pinch two fingers together or apart' },
-  { icon: '👇', action: 'Select a tree',  detail: 'Tap any tree to inspect its habit' },
-  { icon: '🗺️', action: 'Zoom to grove',  detail: 'Tap a coloured area in Area View' },
+  { icon: '✌️', action: 'Orbit / rotate', detail: 'Hold one finger, drag another' },
+  { icon: '🤏', action: 'Zoom in & out',  detail: 'Pinch two fingers together or apart' },
+  { icon: '👇', action: 'Inspect a tree', detail: 'Tap any tree to view its streak & habit' },
+  { icon: '🗺️', action: 'Grove view',     detail: 'Tap a coloured area in Area View' },
 ]
+
 const DESKTOP_CONTROLS = [
   { icon: '🖱️', action: 'Pan camera',     detail: 'Left-click drag' },
   { icon: '🖱️', action: 'Orbit / rotate', detail: 'Right-click drag' },
-  { icon: '🖱️', action: 'Zoom',           detail: 'Scroll wheel' },
+  { icon: '🖱️', action: 'Zoom in & out',  detail: 'Scroll wheel' },
   { icon: '⌨️', action: 'Move camera',    detail: 'W A S D  or  Arrow keys' },
   { icon: '⌨️', action: 'Orbit camera',   detail: 'Q  E  /  I  K' },
-  { icon: '🖱️', action: 'Select a tree',  detail: 'Click any tree' },
+  { icon: '🖱️', action: 'Select a tree',  detail: 'Click any tree to inspect' },
 ]
 
-// ── Tutorial steps definition ───────────────────────────────────────────────
-// placement: 'right' | 'top' | 'bottom' | 'left'
-// customContent: optional React node rendered below the body text
-const STEPS = [
+// ── Mobile tutorial flow (tailored specifically for mobile viewport & drawer UI) ──
+const MOBILE_STEPS = [
+  {
+    target: 'quick-checklist',
+    title: 'Daily Habit Checklist',
+    body: 'Your habits are pinned right here at the top. Tap any circle to complete it and sprout a tree on your island!',
+    emoji: '✅',
+    rx: 16,
+  },
+  {
+    target: 'mobile-fab',
+    title: 'Habit & Island Drawer',
+    body: 'Tap this menu button to open your habits drawer: track streaks, adjust procedural terrain, and manage your grove.',
+    emoji: '📱',
+    rx: 999,
+  },
+  {
+    target: 'shop-btn',
+    title: 'Landmark Shop',
+    body: 'Earn points every time you complete habits. Spend them here on windmills, campsites, lighthouses, and trees!',
+    emoji: '🏪',
+    rx: 999,
+  },
+  {
+    target: null,
+    title: 'Touch & Camera Gestures',
+    body: null,
+    isControlsStep: true,
+    emoji: '👆',
+    rx: 20,
+  },
+  {
+    target: null,
+    title: "You're All Set!",
+    body: 'Complete daily habits, preserve your streaks, and cultivate your tranquil 3D island. Enjoy growing with Forestly!',
+    emoji: '🌲',
+    rx: 20,
+  },
+]
+
+// ── Desktop tutorial flow (targets sidebar items) ──
+const DESKTOP_STEPS = [
   {
     target: 'habit-panel',
     title: 'Your Habit Panel',
@@ -65,7 +104,7 @@ const STEPS = [
   {
     target: 'view-toggle',
     title: 'Trees vs. Areas',
-    body: 'Switch to Area View to see each habit\'s grove highlighted. Click a coloured area to zoom in.',
+    body: "Switch to Area View to see each habit's grove highlighted. Click a coloured area to zoom in.",
     placement: 'bottom',
     emoji: '🗺️',
     rx: 999,
@@ -81,10 +120,23 @@ const STEPS = [
   },
 ]
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  )
+  useEffect(() => {
+    function onResize() {
+      setIsMobile(window.innerWidth < 768)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return isMobile
+}
+
 // ── Controls list rendered inside the tooltip ────────────────────────────────
-function ControlsList() {
-  const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
-  const controls = isTouch ? TOUCH_CONTROLS : DESKTOP_CONTROLS
+function ControlsList({ isMobile }) {
+  const controls = isMobile ? TOUCH_CONTROLS : DESKTOP_CONTROLS
   return (
     <div className="flex flex-col gap-1.5 mt-1 mb-3">
       {controls.map(({ icon, action, detail }) => (
@@ -101,7 +153,7 @@ function ControlsList() {
 }
 
 // ── Tooltip card ─────────────────────────────────────────────────────────────
-function TooltipCard({ step, stepIndex, total, rect, onNext, onSkip }) {
+function TooltipCard({ step, stepIndex, total, rect, isMobile, onNext, onSkip }) {
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
@@ -109,12 +161,103 @@ function TooltipCard({ step, stepIndex, total, rect, onNext, onSkip }) {
     return () => clearTimeout(id)
   }, [stepIndex])
 
+  // Mobile layout: centered floating bottom or top card
+  if (isMobile) {
+    // If target is in lower 50% of the screen, float card at top to avoid overlap
+    const isTargetNearBottom = rect && rect.top > window.innerHeight * 0.45
+
+    return (
+      <div
+        className="pointer-events-auto fixed left-3 right-3 z-[310] mx-auto max-w-[360px]"
+        style={{
+          top: isTargetNearBottom ? 'max(1rem, calc(env(safe-area-inset-top, 0px) + 0.75rem))' : 'auto',
+          bottom: !isTargetNearBottom ? 'max(1.25rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))' : 'auto',
+          opacity: visible ? 1 : 0,
+          transform: visible ? 'translateY(0) scale(1)' : isTargetNearBottom ? 'translateY(-8px) scale(0.96)' : 'translateY(8px) scale(0.96)',
+          transition: 'opacity 0.28s ease, transform 0.28s cubic-bezier(0.34,1.56,0.64,1)',
+        }}
+      >
+        <div
+          style={{
+            background: 'linear-gradient(160deg, rgba(16,33,24,0.97), rgba(10,24,17,0.96))',
+            border: '1px solid rgba(255,255,255,0.14)',
+            borderRadius: 22,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08)',
+            backdropFilter: 'blur(24px)',
+            padding: '16px 18px 14px',
+          }}
+          className="max-h-[78dvh] overflow-y-auto"
+        >
+          {/* Header */}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xl leading-none">{step.emoji}</span>
+            <p className="text-[13px] font-bold text-white leading-tight">{step.title}</p>
+            <span className="ml-auto text-[10px] font-semibold text-[#a8d878]/70">
+              {stepIndex + 1}/{total}
+            </span>
+          </div>
+
+          {/* Content */}
+          {step.isControlsStep ? (
+            <ControlsList isMobile={true} />
+          ) : (
+            <p className="text-[11px] leading-[1.6] text-[#d4e4cc]/75 mb-3.5">
+              {step.body}
+            </p>
+          )}
+
+          {/* Controls hint */}
+          {step.isControlsStep && (
+            <p className="mb-3 text-[10px] leading-relaxed text-[#dce9d6]/50">
+              💡 You can also review controls anytime in the <span className="text-[#a8d878] font-semibold">Controls</span> tab.
+            </p>
+          )}
+
+          {/* Footer & Buttons */}
+          <div className="flex items-center justify-between pt-1 border-t border-white/5">
+            <div className="flex gap-1.5">
+              {Array.from({ length: total }, (_, i) => (
+                <div
+                  key={i}
+                  style={{
+                    width: i === stepIndex ? 16 : 6,
+                    height: 5,
+                    borderRadius: 999,
+                    background: i <= stepIndex ? '#a8d878' : 'rgba(255,255,255,0.18)',
+                    transition: 'all 0.3s ease',
+                  }}
+                />
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onSkip}
+                className="rounded-full px-2.5 py-1 text-[11px] font-medium text-[#d4e4cc]/50 hover:text-white transition"
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                onClick={onNext}
+                className="rounded-full bg-[#a8d878] px-4 py-1.5 text-[11px] font-bold text-[#142610] hover:bg-[#bce691] transition active:scale-95 shadow-md shadow-[#a8d878]/20"
+              >
+                {stepIndex === total - 1 ? 'Start 🌲' : 'Next →'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Desktop layout: anchored to element with arrow
   if (!rect) return null
 
-  const GAP    = 14
-  const TIP_W  = step.isControlsStep ? 300 : 280
-  // Controls step is taller — approximate
-  const TIP_H  = step.isControlsStep ? 340 : 188
+  const GAP   = 14
+  const TIP_W = step.isControlsStep ? 310 : 280
+  const TIP_H = step.isControlsStep ? 340 : 188
 
   let top, left, arrowSide
 
@@ -192,7 +335,7 @@ function TooltipCard({ step, stepIndex, total, rect, onNext, onSkip }) {
 
         {/* Body text OR controls list */}
         {step.isControlsStep ? (
-          <ControlsList />
+          <ControlsList isMobile={false} />
         ) : (
           <p className="text-[11px] leading-[1.65] text-[#d4e4cc]/70 mb-4">
             {step.body}
@@ -247,8 +390,24 @@ function TooltipCard({ step, stepIndex, total, rect, onNext, onSkip }) {
 
 // ── Spotlight overlay ────────────────────────────────────────────────────────
 function Spotlight({ rect, rx = 12 }) {
-  if (!rect) return null
+  const hasValidRect = rect && rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0
   const PAD = 8
+
+  if (!hasValidRect) {
+    return (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(5, 14, 10, 0.62)',
+          zIndex: 300,
+          pointerEvents: 'none',
+          transition: 'background-color 0.3s ease',
+        }}
+      />
+    )
+  }
+
   return (
     <svg
       style={{ position: 'fixed', inset: 0, width: '100%', height: '100%', zIndex: 300, pointerEvents: 'none' }}
@@ -285,34 +444,51 @@ function Spotlight({ rect, rx = 12 }) {
 
 // ── Root TutorialTooltips ────────────────────────────────────────────────────
 export default function TutorialTooltips({ onDone }) {
+  const isMobile = useIsMobile()
+  const steps = isMobile ? MOBILE_STEPS : DESKTOP_STEPS
+
   const [stepIndex, setStepIndex] = useState(0)
   const [rect, setRect]           = useState(null)
   const [exiting, setExiting]     = useState(false)
   const rafRef = useRef(null)
 
-  const step = STEPS[stepIndex]
+  const step = steps[stepIndex] || steps[0]
 
   useEffect(() => {
     function measure() {
+      if (!step.target) {
+        setRect(null)
+        return
+      }
       const el = document.querySelector(`[data-tutorial="${step.target}"]`)
-      if (el) setRect(el.getBoundingClientRect())
-      else    setRect(null)
+      if (el) {
+        const r = el.getBoundingClientRect()
+        // Only consider it valid if on screen
+        if (r.width > 0 && r.height > 0 && r.top < window.innerHeight && r.bottom > 0) {
+          setRect(r)
+        } else {
+          setRect(null)
+        }
+      } else {
+        setRect(null)
+      }
     }
+
     measure()
     window.addEventListener('resize', measure)
     window.addEventListener('scroll', measure, true)
-    rafRef.current = setInterval(measure, 400)
+    rafRef.current = setInterval(measure, 350)
     return () => {
       window.removeEventListener('resize', measure)
       window.removeEventListener('scroll', measure, true)
       clearInterval(rafRef.current)
     }
-  }, [step.target])
+  }, [step?.target])
 
   function handleNext() {
-    if (stepIndex < STEPS.length - 1) {
+    if (stepIndex < steps.length - 1) {
       setRect(null)
-      setTimeout(() => setStepIndex(i => i + 1), 80)
+      setTimeout(() => setStepIndex(i => i + 1), 70)
     } else {
       finish()
     }
@@ -321,7 +497,7 @@ export default function TutorialTooltips({ onDone }) {
   function finish() {
     setExiting(true)
     localStorage.setItem(TUTORIAL_KEY, '1')
-    setTimeout(() => onDone(), 450)
+    setTimeout(() => onDone(), 400)
   }
 
   return (
@@ -337,7 +513,7 @@ export default function TutorialTooltips({ onDone }) {
         style={{
           position: 'fixed', inset: 0, zIndex: 299,
           opacity: exiting ? 0 : 1,
-          transition: 'opacity 0.45s ease',
+          transition: 'opacity 0.4s ease',
           pointerEvents: exiting ? 'none' : 'auto',
         }}
       >
@@ -345,8 +521,9 @@ export default function TutorialTooltips({ onDone }) {
         <TooltipCard
           step={step}
           stepIndex={stepIndex}
-          total={STEPS.length}
+          total={steps.length}
           rect={rect}
+          isMobile={isMobile}
           onNext={handleNext}
           onSkip={finish}
         />
