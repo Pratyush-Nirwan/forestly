@@ -386,7 +386,7 @@ function App() {
 
       {/* ── Top info: greeting + tree count + checklist ── */}
       <div
-        className="pointer-events-none absolute top-0 left-3 sm:left-4 md:left-auto md:right-28 z-20 flex flex-col items-start md:items-end gap-2 max-w-[calc(100vw-7.5rem)] md:max-w-xs"
+        className="pointer-events-none absolute top-0 left-3 sm:left-4 md:left-auto md:right-16 z-20 flex flex-col items-start md:items-end gap-2 max-w-[calc(100vw-4.5rem)] md:max-w-xs"
         style={{ paddingTop: 'calc(env(safe-area-inset-top, 44px) + 10px)' }}
       >
         <div className="pointer-events-auto text-left md:text-right drop-shadow-[0_2px_8px_rgba(0,0,0,0.35)]">
